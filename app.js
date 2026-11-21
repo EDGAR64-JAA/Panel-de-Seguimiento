@@ -97,7 +97,8 @@ var COLUMNAS_ESPERADAS =
   'TRANSFERENCIAS (DETALLADO): Doc.Interno, Fecha Embarque, Tda.Origen, Descripción, DOC.CL.MOVTO.303, Fecha Doc.303, Articulo, Destino, Descripción, Texto, Costo, Costo, Fecha Doc.305, Piezas Embarcadas, Piezas Recibidas, Dif.de Piezas, DOC.CL.MOVTO.304, Dif. Final, Dias Transcurridos. En renglones viejos (fecha como texto DD.MM.AAAA) las piezas embarcadas vienen en la columna Fecha Doc.305 y las piezas pendientes en DOC.CL.MOVTO.304; el monto siempre es el primer Costo.\n' +
   'TRANSFERENCIAS (SAP): hoja REPORTE con ZONA, SUCURSAL ORIGEN, DOCUMENTO CONTABLE, FECHA CONTABLE, DIAS TRANSCURRIDOS, IMPORTE, SUCURSAL DESTINO, ESTATUS.\n' +
   'BLOQUEADO (CONCENTRADO): hoja CONCENTRADO con Centro, Material, EAN/UPC, Denomin., Unidad, Jerarquía 2, Almacén, Bloqueado, V. Stock bloq. (y hoja RESUMEN con Centro, Importe bloqueado).\n' +
-  'BLOQUEADO (original): Hoja1 con ZONA, Material, Centro, Sucursal, Almacen, Libre Util, Stock Bloq, Cto, Importe, FORMATO, Descripción, Departamento, Clase.';
+  'BLOQUEADO (original): Hoja1 con ZONA, Material, Centro, Sucursal, Almacen, Libre Util, Stock Bloq, Cto, Importe, FORMATO, Descripción, Departamento, Clase.\n' +
+  'ROTATIVOS: SUC, ART, TEO, FIS, DIFU, DIFP, FCN, ROL (solo se siguen las sucursales 127, 331, 333, 334 y 1060; la semana va de jueves a miércoles).';
 
 function detectarTipo(wb) {
   var hojas = wb.SheetNames || [];
@@ -121,6 +122,12 @@ function detectarTipo(wb) {
   for (var i = 0; i < hojas.length; i++) {
     var cols = encabezadosDe(wb, hojas[i]);
     if (!cols.length) continue;
+    // Rotativos: conteos por sucursal (SUC, ART, TEO, FIS, DIFU, DIFP, FCN, ROL).
+    // La hoja que sube el usuario ya no trae Hoja2; todo se calcula de esta hoja.
+    if (tiene(cols, 'SUC') && tiene(cols, 'ART') && tiene(cols, 'FCN') && tiene(cols, 'ROL') &&
+        tiene(cols, 'DIFU') && tiene(cols, 'DIFP')) {
+      return { tipo: 'rot', formato: 'rotativos', hoja: hojas[i] };
+    }
     if (tiene(cols, 'Stock Bloq') && tiene(cols, 'Importe') && tiene(cols, 'Libre Util')) {
       return { tipo: 'bloq', formato: 'original', hoja: hojas[i] };
     }
@@ -487,444 +494,109 @@ function computeBloqOrig(filas) {
     porSucursal: aLista(porSuc, 'impacto'), porDepartamento: aLista(porDepto, 'importe'), top: top };
 }
 
-/* Exportación para Node (verificación) */
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = {
-    parseFecha: parseFecha, num: num, valorNumerico: valorNumerico, detectarTipo: detectarTipo,
-    parseMerma: parseMerma, parseTransfDestino: parseTransfDestino,
-    parseTransfDetallado: parseTransfDetallado, computeTransfDetallado: computeTransfDetallado,
-    parseTransfSAP: parseTransfSAP, parseBloqConcentrado: parseBloqConcentrado,
-    parseBloqOriginal: parseBloqOriginal, sugerirCorte: sugerirCorte,
-    computeMerma: computeMerma, computeTransfDestino: computeTransfDestino,
-    computeTransfSAP: computeTransfSAP, computeBloqConc: computeBloqConc,
-    computeBloqOrig: computeBloqOrig, filasDeHoja: filasDeHoja
-  };
+/* ---------------- rotativos (conteos semanales por sucursal) ---------------- */
+var ROT_SUC = ['127', '331', '333', '334', '1060'];
+var ROT_META = { '127': 200, '331': 50, '333': 50, '334': 100, '1060': 50 };
+
+function sucNormalizada(v) {
+  var s = str(v).replace(/^0+/, '');
+  return s === '' ? '0' : s;
 }
 
-/* ================= UI (solo navegador) ================= */
-if (typeof window !== 'undefined' && typeof document !== 'undefined') {
-
-var state = { cargas: [], seguimiento: {} };
-var pendientes = [];
-var tabActual = 'merma';
-
-function cargarEstado() {
-  try {
-    var raw = localStorage.getItem(LS_KEY);
-    if (raw) { var s = JSON.parse(raw); if (s && s.cargas) state = s; }
-  } catch (e) { state = { cargas: [], seguimiento: {} }; }
-  if (!state.seguimiento) state.seguimiento = {};
-  if (!state.cargas) state.cargas = [];
+/* La semana de rotativos va de JUEVES a MIÉRCOLES. Devuelve el jueves (ISO)
+   de la semana que contiene la fecha dada. */
+function juevesDe(iso) {
+  var d = new Date(iso + 'T00:00:00');
+  var desdeJueves = (d.getDay() - 4 + 7) % 7; /* getDay: domingo=0, jueves=4 */
+  d.setDate(d.getDate() - desdeJueves);
+  return isoDeFecha(d);
 }
-function guardarEstado() {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(state)); }
-  catch (e) { toast('No se pudo guardar en este dispositivo (espacio lleno). Borra cortes viejos en Cargas.'); }
+function miercolesDe(juevesISO) {
+  var d = new Date(juevesISO + 'T00:00:00');
+  d.setDate(d.getDate() + 6);
+  return isoDeFecha(d);
 }
-function toast(msg) {
-  var t = document.getElementById('toast');
-  t.textContent = msg; t.classList.remove('hidden');
-  setTimeout(function () { t.classList.add('hidden'); }, 4000);
-}
-function $ (id) { return document.getElementById(id); }
-function ultimaCarga(tipo) {
-  var cs = state.cargas.filter(function (c) { return c.tipo === tipo; });
-  cs.sort(function (a, b) { return (a.fechaCorte < b.fechaCorte) ? 1 : -1; });
-  return cs.length ? cs[0] : null;
-}
-function cortesDe(tipo) {
-  return state.cargas.filter(function (c) { return c.tipo === tipo; })
-    .sort(function (a, b) { return (a.fechaCorte < b.fechaCorte) ? -1 : 1; });
-}
-function nombreTipo(tipo) {
-  return tipo === 'merma' ? 'Merma' : tipo === 'transf' ? 'Transferencias' : 'Bloqueado';
+function etiquetaSemana(juevesISO) {
+  var m = miercolesDe(juevesISO);
+  return 'Semana ' + juevesISO.slice(8, 10) + '/' + juevesISO.slice(5, 7) +
+    '–' + m.slice(8, 10) + '/' + m.slice(5, 7) + '/' + m.slice(0, 4);
 }
 
-/* ---- gráficas simples ---- */
-function dibujarBarras(canvas, items, fmt) {
-  if (!canvas) return;
-  var dpr = window.devicePixelRatio || 1;
-  var W = canvas.clientWidth || 320, H = 180;
-  canvas.width = W * dpr; canvas.height = H * dpr;
-  var ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, W, H);
-  if (!items.length) { ctx.fillStyle = '#5a6b7c'; ctx.font = '13px sans-serif'; ctx.fillText('Sin datos', 10, 30); return; }
-  var max = Math.max.apply(null, items.map(function (i) { return i.valor; })) || 1;
-  var bw = Math.min(48, (W - 20) / items.length - 10);
-  items.forEach(function (it, i) {
-    var h = Math.max(2, (it.valor / max) * (H - 52));
-    var x = 10 + i * ((W - 20) / items.length) + ((W - 20) / items.length - bw) / 2;
-    ctx.fillStyle = '#0b2a4a';
-    ctx.fillRect(x, H - 30 - h, bw, h);
-    ctx.fillStyle = '#1c2b3a'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText(fmt ? fmt(it.valor) : fmtNum(it.valor), x + bw / 2, H - 34 - h);
-    ctx.fillText(it.etiqueta, x + bw / 2, H - 12);
+/* Solo se siguen las 5 sucursales de ROT_SUC; los demás SUC del archivo se ignoran.
+   FCN puede venir como fecha de Excel o como texto DD.MM.AAAA (parseFecha lo cubre). */
+function parseRotativos(filas) {
+  var out = [];
+  filas.forEach(function (r) {
+    var suc = sucNormalizada(r['SUC']);
+    if (ROT_SUC.indexOf(suc) < 0) return;
+    out.push({
+      suc: suc,
+      fecha: parseFecha(r['FCN']),
+      rol: str(r['ROL']),
+      articulo: str(r['ART']),
+      descripcion: str(r['DSC']),
+      teo: num(r['TEO']),
+      fis: num(r['FIS']),
+      difu: num(r['DIFU']),
+      difp: num(r['DIFP'])
+    });
   });
+  return out;
 }
-function donutHTML(ant, total, esPiezas) {
-  var acc = 0, partes = [], leyenda = '';
-  RANGOS.forEach(function (r, i) {
-    var v = ant[r];
-    var val = esPiezas ? v.piezas : v.monto;
-    var pct = total ? (val / total * 100) : 0;
-    var ini = acc; acc += pct;
-    partes.push(COLRES_RANGO_SAFE(i) + ' ' + ini.toFixed(1) + '% ' + acc.toFixed(1) + '%');
-    leyenda += '<div><span class="punto" style="background:' + COLORES_RANGO[i] + '"></span>' + r + ' días: ' +
-      (esPiezas ? fmtNum(val) + ' piezas' : fmtDinero(val)) + ' (' + pct.toFixed(1) + '%)</div>';
+
+/* Agrupa por semana (jueves-miércoles) y sucursal. Las sucursales sin renglones
+   en una semana que otras sí tienen aparecen con 0 artículos y estatus Pendiente. */
+function computeRotativos(filas) {
+  var porSemana = {}; /* juevesISO -> suc -> stats */
+  var rolesTotales = {};
+  var totalArticulos = 0;
+  filas.forEach(function (f) {
+    if (!f.fecha) return;
+    totalArticulos++;
+    if (f.rol) rolesTotales[f.rol] = 1;
+    var sem = juevesDe(f.fecha);
+    if (!porSemana[sem]) porSemana[sem] = {};
+    var s = porSemana[sem][f.suc] || { articulos: 0, roles: {}, difu: 0, difp: 0, conDif: 0 };
+    s.articulos++;
+    if (f.rol) s.roles[f.rol] = 1;
+    s.difu += f.difu; s.difp += f.difp;
+    if (f.difu !== 0) s.conDif++;
+    porSemana[sem][f.suc] = s;
   });
-  var bg = partes.length ? 'conic-gradient(' + partes.join(', ') + ')' : '#e8eef4';
-  return '<div class="donut-wrap"><div class="donut" style="background:' + bg + '"></div><div class="leyenda">' + leyenda + '</div></div>';
-}
-function COLRES_RANGO_SAFE(i) { return COLORES_RANGO[i]; }
-function barrasHTML(titulo, items, fmt) {
-  if (!items.length) return '';
-  var max = Math.max.apply(null, items.map(function (i) { return i.valor; })) || 1;
-  var html = '<div class="grafica"><h3>' + esc(titulo) + '</h3>';
-  items.forEach(function (it) {
-    var pct = (it.valor / max * 100).toFixed(1);
-    html += '<div class="barra-fila"><span class="blabel">' + esc(it.etiqueta) + '</span>' +
-      '<span class="btrack"><span class="bfill" style="display:block;width:' + pct + '%"></span></span>' +
-      '<span class="bvalor">' + (fmt ? fmt(it.valor) : fmtNum(it.valor)) + '</span></div>';
+  var semanas = Object.keys(porSemana).sort().reverse();
+  var rows = [];
+  semanas.forEach(function (sem) {
+    ROT_SUC.forEach(function (suc) {
+      var s = porSemana[sem][suc] || { articulos: 0, roles: {}, difu: 0, difp: 0, conDif: 0 };
+      var meta = ROT_META[suc];
+      var cumpl = Math.min(100, s.articulos / meta * 100);
+      rows.push({
+        semana: sem, etiqueta: etiquetaSemana(sem), suc: suc,
+        articulos: s.articulos, conteos: Object.keys(s.roles).length,
+        meta: meta, cumplimiento: cumpl,
+        estatus: cumpl >= 100 ? 'Cumplido' : 'Pendiente',
+        difu: s.difu, difp: s.difp, conDif: s.conDif,
+        exactitud: s.articulos ? ((s.articulos - s.conDif) / s.articulos * 100) : 0
+      });
+    });
   });
-  return html + '</div>';
-}
-function tablaHTML(headers, rowsHTML, totalRowHTML) {
-  var h = headers.map(function (x) { return '<th class="' + (x.num ? 'num' : '') + '">' + esc(x.t) + '</th>'; }).join('');
-  return '<div class="tabla-scroll"><table><thead><tr>' + h + '</tr></thead><tbody>' + rowsHTML +
-    (totalRowHTML ? '<tr class="total-row">' + totalRowHTML + '</tr>' : '') + '</tbody></table></div>';
-}
-function segControl(tipo, clave, estadoActual, notaActual) {
-  var s = state.seguimiento[clave] || {};
-  var est = s.estado || estadoActual || 'Pendiente';
-  var nota = (s.nota !== undefined) ? s.nota : (notaActual || '');
-  var opts = ['Pendiente', 'En seguimiento', 'Liberado', 'Escalado'].map(function (o) {
-    return '<option value="' + o + '"' + (o === est ? ' selected' : '') + '>' + o + '</option>';
-  }).join('');
-  return '<select class="estado" data-seg="' + esc(clave) + '" data-campo="estado">' + opts + '</select>' +
-    '<br><input class="nota" data-seg="' + esc(clave) + '" data-campo="nota" placeholder="Nota…" value="' + esc(nota) + '">';
-}
-function variacionHTML(actual, anterior, invertida) {
-  if (anterior === null || anterior === undefined) return '<div class="variacion igual">Primer corte</div>';
-  var dif = actual - anterior;
-  if (Math.abs(dif) < 0.005) return '<div class="variacion igual">Sin cambio vs corte anterior</div>';
-  var pct = anterior ? (dif / Math.abs(anterior) * 100) : 0;
-  var baja = dif < 0;
-  var buena = invertida ? baja : !baja;
-  var cls = buena ? 'baja' : 'sube';
-  return '<div class="variacion ' + cls + '">' + (baja ? '▼' : '▲') + ' ' + fmtDinero(Math.abs(dif)) +
-    ' (' + Math.abs(pct).toFixed(1) + '%) vs corte anterior</div>';
+  return { filas: rows, semanas: semanas, totalArticulos: totalArticulos,
+    totalConteos: Object.keys(rolesTotales).length };
 }
 
-/* ---- render de paneles ---- */
-function renderMerma() {
-  var c = ultimaCarga('merma');
-  var el = $('merma-panel'), info = $('merma-corte');
-  if (!c) { info.textContent = ''; el.innerHTML = '<p class="vacio">Aún no hay merma cargada. Sube el archivo de merma arriba.</p>'; return; }
-  var p = computeMerma(c.filas, c.fechaCorte);
-  var cortes = cortesDe('merma');
-  var ant = cortes.length > 1 ? computeMerma(cortes[cortes.length - 2].filas, cortes[cortes.length - 2].fechaCorte).total : null;
-  info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · ' + c.filas.length + ' registros';
-  var html = '<div class="totales">' +
-    '<div class="total-card destacado"><div class="etiqueta">Monto pendiente</div><div class="valor">' + fmtDinero(p.total) + '</div>' + variacionHTML(p.total, ant, true) + '</div>' +
-    '<div class="total-card"><div class="etiqueta">Registros</div><div class="valor">' + p.registros + '</div></div>' +
-    '<div class="total-card"><div class="etiqueta">Sucursales</div><div class="valor">' + p.porCentro.length + '</div></div>' +
-    '<div class="total-card"><div class="etiqueta">Críticos</div><div class="valor">' + p.porCentro.filter(function (x) { return x.nivel === 'CRITICO'; }).length + '</div></div></div>';
-  html += '<div class="grafica"><h3>Evolución por fecha de entrada</h3><canvas id="cv-merma"></canvas></div>';
-  html += '<div class="grafica"><h3>Distribución por antigüedad</h3>' + donutHTML(p.antiguedad, p.total, false) + '</div>';
-  html += barrasHTML('Top sucursales por monto', p.porCentro.slice(0, 6).map(function (x) { return { etiqueta: x.centro, valor: x.monto }; }), fmtDinero);
-  var rows = p.porCentro.map(function (x) {
-    var clave = 'merma:' + x.centro;
-    return '<tr><td>' + esc(x.centro) + '</td><td class="num">' + fmtDinero(x.monto) + '</td><td class="num">' + x.pct.toFixed(1) + '%</td>' +
-      '<td class="num">' + x.registros + '</td><td>' + fmtFecha(x.entradaMasAntigua) + '</td><td class="num">' + (x.dias === null ? '—' : x.dias) + '</td>' +
-      '<td><span class="nivel ' + x.nivel.toLowerCase() + '">' + x.nivel + '</span></td><td>' + esc(x.accion) + '</td>' +
-      '<td>' + segControl('merma', clave) + '</td></tr>';
-  }).join('');
-  html += '<h3>Detalle por sucursal</h3>' + tablaHTML(
-    [{ t: 'Sucursal' }, { t: 'Monto', num: true }, { t: '%', num: true }, { t: 'Reg.', num: true }, { t: 'Entrada más antigua' }, { t: 'Días', num: true }, { t: 'Nivel' }, { t: 'Acción' }, { t: 'Seguimiento' }],
-    rows, '<td>Total</td><td class="num">' + fmtDinero(p.total) + '</td><td class="num">100%</td><td class="num">' + p.registros + '</td><td></td><td></td><td></td><td></td><td></td>');
-  el.innerHTML = html;
-  dibujarBarras($('cv-merma'), p.evolucion.map(function (e) { return { etiqueta: e.fecha.slice(5), valor: e.monto }; }), fmtDinero);
-  var ev = cortes.map(function (cc) { return { fecha: cc.fechaCorte, monto: computeMerma(cc.filas, cc.fechaCorte).total }; });
-  if (ev.length > 1) {
-    el.insertAdjacentHTML('beforeend', '<div class="grafica"><h3>Evolución por corte</h3><canvas id="cv-merma-cortes"></canvas></div>');
-    dibujarBarras($('cv-merma-cortes'), ev.map(function (e) { return { etiqueta: e.fecha.slice(5), valor: e.monto }; }), fmtDinero);
-  }
-}
-
-function renderTransf() {
-  var c = ultimaCarga('transf');
-  var el = $('transf-panel'), info = $('transf-corte');
-  if (!c) { info.textContent = ''; el.innerHTML = '<p class="vacio">Aún no hay transferencias cargadas. Sube el archivo de transferencias arriba.</p>'; return; }
-  info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · Formato: ' + (c.formato === 'destino' ? 'Destino' : c.formato === 'detallado' ? 'Detallado' : 'SAP');
-  var html = '';
-  if (c.formato === 'detallado') {
-    var d = computeTransfDetallado(c.filas);
-    html += '<div class="totales">' +
-      '<div class="total-card destacado"><div class="etiqueta">Importe pendiente</div><div class="valor">' + fmtDinero(d.importeTotal) + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Documentos</div><div class="valor">' + d.documentos + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Piezas pendientes</div><div class="valor">' + fmtNum(d.piezasPend) + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Más antiguo</div><div class="valor">' + (d.masAntiguo ? d.masAntiguo.dias + ' días' : '—') + '</div></div></div>';
-    html += '<div class="grafica"><h3>Distribución por antigüedad</h3>' + donutHTML(d.antiguedad, d.importeTotal, false) + '</div>';
-    html += barrasHTML('Pendiente por sucursal origen', d.porOrigen.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.importe }; }), fmtDinero);
-    html += barrasHTML('Pendiente por sucursal destino', d.porDestino.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.importe }; }), fmtDinero);
-    var topRows = d.topArticulos.map(function (f) {
-      var clave = 'transf:art:' + f.doc + ':' + f.articulo;
-      return '<tr><td>' + esc(f.articulo) + '</td><td>' + esc(f.texto) + '</td><td>' + esc(f.doc) + '</td><td class="num">' + fmtDinero(f.costo) + '</td><td class="num">' + fmtNum(f.piezasPend) + '</td><td class="num">' + f.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
-    }).join('');
-    html += '<h3>Artículos más críticos</h3>' + tablaHTML(
-      [{ t: 'Artículo' }, { t: 'Texto' }, { t: 'Documento' }, { t: 'Costo', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }], topRows, '');
-    var docRows = d.porDoc.map(function (x) {
-      var clave = 'transf:' + x.doc;
-      return '<tr><td>' + esc(x.doc) + '</td><td>' + fmtFecha(x.fechaEmb) + '</td><td>' + esc(x.origen) + ' ' + esc(x.origenDesc) + '</td>' +
-        '<td>' + esc(x.destino) + ' ' + esc(x.destinoDesc) + '</td><td class="num">' + x.articulos + '</td><td class="num">' + fmtDinero(x.importe) + '</td>' +
-        '<td class="num">' + fmtNum(x.piezasPend) + '</td><td class="num">' + x.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
-    }).join('');
-    html += '<h3>Detalle por documento</h3>' + tablaHTML(
-      [{ t: 'Documento' }, { t: 'Fecha embarque' }, { t: 'Origen' }, { t: 'Destino' }, { t: 'Artículos', num: true }, { t: 'Importe', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }],
-      docRows, '<td>Total</td><td></td><td></td><td></td><td class="num">' + d.registros + '</td><td class="num">' + fmtDinero(d.importeTotal) + '</td><td class="num">' + fmtNum(d.piezasPend) + '</td><td></td><td></td>');
-    var artRows = c.filas.slice().sort(function (a, b) { return b.costo - a.costo; }).map(function (f) {
-      var clave = 'transf:art:' + f.doc + ':' + f.articulo;
-      return '<tr><td>' + esc(f.articulo) + '</td><td>' + esc(f.texto) + '</td><td>' + esc(f.doc) + '</td><td>' + esc(f.origen) + ' → ' + esc(f.destino) + '</td><td class="num">' + fmtDinero(f.costo) + '</td><td class="num">' + fmtNum(f.piezasEmb) + '</td><td class="num">' + fmtNum(f.piezasPend) + '</td><td class="num">' + f.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
-    }).join('');
-    html += '<h3>Detalle por artículo</h3>' + tablaHTML(
-      [{ t: 'Artículo' }, { t: 'Texto' }, { t: 'Documento' }, { t: 'Origen → Destino' }, { t: 'Costo', num: true }, { t: 'Piezas emb.', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }],
-      artRows, '');
-    if (d.masAntiguo) html += '<p class="hint">Documento más antiguo: ' + esc(d.masAntiguo.doc) + ' de ' + esc(d.masAntiguo.origenDesc || d.masAntiguo.origen) + ' a ' + esc(d.masAntiguo.destinoDesc || d.masAntiguo.destino) + ' (' + d.masAntiguo.dias + ' días, ' + fmtDinero(d.masAntiguo.importe) + ', ' + fmtNum(d.masAntiguo.piezasPend) + ' piezas).</p>';
-  } else if (c.formato === 'destino') {
-    var p = computeTransfDestino(c.filas);
-    html += '<div class="totales">' +
-      '<div class="total-card destacado"><div class="etiqueta">Documentos pendientes</div><div class="valor">' + p.documentos + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Piezas embarcadas</div><div class="valor">' + fmtNum(p.piezasEmb) + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Piezas pendientes</div><div class="valor">' + fmtNum(p.piezasPend) + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Importe</div><div class="valor">' + (p.costoTotal ? fmtDinero(p.costoTotal) : '—') + '</div><div class="sub">' + (p.costoTotal ? '' : 'El archivo trae Costo Total en 0') + '</div></div></div>';
-    html += '<div class="grafica"><h3>Distribución por antigüedad (piezas pendientes)</h3>' + donutHTML(p.antiguedad, p.piezasPend, true) + '</div>';
-    html += barrasHTML('Pendiente por sucursal origen (piezas)', p.porOrigen.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.piezas }; }), fmtNum);
-    html += barrasHTML('Pendiente por sucursal destino (piezas)', p.porDestino.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.piezas }; }), fmtNum);
-    var rows = c.filas.slice().sort(function (a, b) { return b.dias - a.dias; }).map(function (f) {
-      var clave = 'transf:' + f.doc;
-      return '<tr><td>' + esc(f.doc) + '</td><td>' + fmtFecha(f.fechaEmb) + '</td><td>' + esc(f.origen) + ' ' + esc(f.origenDesc) + '</td>' +
-        '<td>' + esc(f.destino) + ' ' + esc(f.destinoDesc) + '</td><td class="num">' + fmtNum(f.piezasEmb) + '</td><td class="num">' + fmtNum(f.difFinal) + '</td>' +
-        '<td class="num">' + f.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
-    }).join('');
-    html += '<h3>Detalle por documento</h3>' + tablaHTML(
-      [{ t: 'Documento' }, { t: 'Fecha embarque' }, { t: 'Origen' }, { t: 'Destino' }, { t: 'Piezas emb.', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }],
-      rows, '<td>Total</td><td></td><td></td><td></td><td class="num">' + fmtNum(p.piezasEmb) + '</td><td class="num">' + fmtNum(p.piezasPend) + '</td><td></td><td></td>');
-    if (p.masAntiguo) html += '<p class="hint">Documento más antiguo: ' + esc(p.masAntiguo.doc) + ' de ' + esc(p.masAntiguo.origenDesc || p.masAntiguo.origen) + ' (' + p.masAntiguo.dias + ' días).</p>';
-  } else {
-    var q = computeTransfSAP(c.filas);
-    html += '<div class="totales">' +
-      '<div class="total-card destacado"><div class="etiqueta">Importe pendiente</div><div class="valor">' + fmtDinero(q.importeTotal) + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Documentos</div><div class="valor">' + q.documentos + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Sucursales origen</div><div class="valor">' + q.porOrigen.length + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Más antiguo</div><div class="valor">' + (q.masAntiguo ? q.masAntiguo.dias + ' días' : '—') + '</div></div></div>';
-    html += '<div class="grafica"><h3>Distribución por antigüedad</h3>' + donutHTML(q.antiguedad, q.importeTotal, false) + '</div>';
-    html += barrasHTML('Pendiente por sucursal origen', q.porOrigen.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.importe }; }), fmtDinero);
-    var rows2 = c.filas.slice().sort(function (a, b) { return b.dias - a.dias; }).map(function (f) {
-      var clave = 'transf:' + f.doc;
-      return '<tr><td>' + esc(f.doc) + '</td><td>' + fmtFecha(f.fechaCont) + '</td><td>' + esc(f.origen) + ' ' + esc(f.origenDesc) + '</td>' +
-        '<td>' + esc(f.destino) + ' ' + esc(f.destinoDesc) + '</td><td class="num">' + fmtDinero(f.importe) + '</td>' +
-        '<td class="num">' + f.dias + '</td><td>' + esc(f.estatus || '') + '</td><td>' + segControl('transf', clave) + '</td></tr>';
-    }).join('');
-    html += '<h3>Detalle por documento</h3>' + tablaHTML(
-      [{ t: 'Documento' }, { t: 'Fecha contable' }, { t: 'Origen' }, { t: 'Destino' }, { t: 'Importe', num: true }, { t: 'Días', num: true }, { t: 'Estatus' }, { t: 'Seguimiento' }],
-      rows2, '<td>Total</td><td></td><td></td><td></td><td class="num">' + fmtDinero(q.importeTotal) + '</td><td></td><td></td><td></td>');
-  }
-  el.innerHTML = html;
-}
-
-function renderBloq() {
-  var c = ultimaCarga('bloq');
-  var el = $('bloq-panel'), info = $('bloq-corte');
-  if (!c) { info.textContent = ''; el.innerHTML = '<p class="vacio">Aún no hay stock bloqueado cargado. Sube el archivo de bloqueados arriba.</p>'; return; }
-  info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · Formato: ' + (c.formato === 'concentrado' ? 'Concentrado' : 'Bloq original');
-  var html = '';
-  if (c.advertencia) html += '<div class="alerta">' + esc(c.advertencia) + '</div>';
-  if (c.formato === 'concentrado') {
-    var p = computeBloqConc(c.filas, c.resumenHoja);
-    html += '<div class="totales">' +
-      '<div class="total-card destacado"><div class="etiqueta">Importe bloqueado</div><div class="valor">' + fmtDinero(p.total) + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Registros</div><div class="valor">' + p.registros + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Unidades bloqueadas</div><div class="valor">' + fmtNum(p.unidades, 3) + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Centros</div><div class="valor">' + p.porCentro.length + '</div></div></div>';
-    html += barrasHTML('Importe por centro', p.porCentro.map(function (x) { return { etiqueta: x.clave, valor: x.valor }; }), fmtDinero);
-    html += barrasHTML('Por Jerarquía 2', p.porJerarquia.map(function (x) { return { etiqueta: x.clave, valor: x.valor }; }), fmtDinero);
-    var rows = p.porCentro.map(function (x) {
-      var clave = 'bloq:centro:' + x.clave;
-      return '<tr><td>' + esc(x.clave) + '</td><td class="num">' + x.registros + '</td><td class="num">' + fmtNum(x.unidades, 3) + '</td><td class="num">' + fmtDinero(x.valor) + '</td><td>' + segControl('bloq', clave) + '</td></tr>';
-    }).join('');
-    html += '<h3>Detalle por centro</h3>' + tablaHTML(
-      [{ t: 'Centro' }, { t: 'Registros', num: true }, { t: 'Unidades', num: true }, { t: 'Importe', num: true }, { t: 'Seguimiento' }],
-      rows, '<td>Total</td><td class="num">' + p.registros + '</td><td class="num">' + fmtNum(p.unidades, 3) + '</td><td class="num">' + fmtDinero(p.total) + '</td><td></td>');
-    var topRows = p.top.map(function (f) {
-      var clave = 'bloq:' + f.centro + ':' + f.material;
-      return '<tr><td>' + esc(f.centro) + '</td><td>' + esc(f.material) + '</td><td>' + esc(f.denom) + '</td><td>' + esc(f.jerarquia) + '</td><td class="num">' + fmtNum(f.bloqueado, 3) + '</td><td class="num">' + fmtDinero(f.valor) + '</td><td>' + segControl('bloq', clave) + '</td></tr>';
-    }).join('');
-    html += '<h3>Artículos más críticos</h3>' + tablaHTML(
-      [{ t: 'Centro' }, { t: 'Material' }, { t: 'Denominación' }, { t: 'Jerarquía' }, { t: 'Bloqueado', num: true }, { t: 'Valor', num: true }, { t: 'Seguimiento' }], topRows, '');
-  } else {
-    var q = computeBloqOrig(c.filas);
-    html += '<div class="totales">' +
-      '<div class="total-card destacado"><div class="etiqueta">Impacto absoluto</div><div class="valor">' + fmtDinero(q.impacto) + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Importe neto</div><div class="valor">' + fmtDinero(q.neto) + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Registros</div><div class="valor">' + q.registros + '</div></div>' +
-      '<div class="total-card"><div class="etiqueta">Stock + / −</div><div class="valor" style="font-size:17px">' + fmtNum(q.stockPos, 1) + ' / ' + fmtNum(q.stockNeg, 1) + '</div><div class="sub">' + q.stockPosN + ' positivos · ' + q.stockNegN + ' negativos</div></div></div>';
-    html += barrasHTML('Impacto por sucursal', q.porSucursal.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.impacto }; }), fmtDinero);
-    html += barrasHTML('Por departamento', q.porDepartamento.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: Math.abs(x.importe) }; }), fmtDinero);
-    var rows2 = q.porSucursal.map(function (x) {
-      var clave = 'bloq:centro:' + x.clave;
-      return '<tr><td>' + esc(x.clave) + ' ' + esc(x.nombre) + '</td><td class="num">' + x.registros + '</td><td class="num">' + fmtDinero(x.importe) + '</td><td class="num">' + fmtDinero(x.impacto) + '</td><td>' + segControl('bloq', clave) + '</td></tr>';
-    }).join('');
-    html += '<h3>Detalle por sucursal</h3>' + tablaHTML(
-      [{ t: 'Sucursal' }, { t: 'Registros', num: true }, { t: 'Importe neto', num: true }, { t: 'Impacto', num: true }, { t: 'Seguimiento' }],
-      rows2, '<td>Total</td><td class="num">' + q.registros + '</td><td class="num">' + fmtDinero(q.neto) + '</td><td class="num">' + fmtDinero(q.impacto) + '</td><td></td>');
-    var topRows2 = q.top.map(function (f) {
-      var clave = 'bloq:' + f.centro + ':' + f.material;
-      return '<tr><td>' + esc(f.centro) + '</td><td>' + esc(f.material) + '</td><td>' + esc(f.descripcion) + '</td><td>' + esc(f.departamento) + '</td><td class="num">' + fmtNum(f.stockBloq, 2) + '</td><td class="num">' + fmtDinero(f.importe) + '</td><td>' + segControl('bloq', clave) + '</td></tr>';
-    }).join('');
-    html += '<h3>Artículos más críticos</h3>' + tablaHTML(
-      [{ t: 'Centro' }, { t: 'Material' }, { t: 'Descripción' }, { t: 'Departamento' }, { t: 'Stock bloq.', num: true }, { t: 'Importe', num: true }, { t: 'Seguimiento' }], topRows2, '');
-  }
-  el.innerHTML = html;
-}
-
-function renderCargas() {
-  var el = $('cargas-lista');
-  if (!state.cargas.length) { el.innerHTML = '<p class="vacio">No hay cargas todavía.</p>'; return; }
-  var cs = state.cargas.slice().sort(function (a, b) { return (a.fechaCorte < b.fechaCorte) ? 1 : -1; });
-  el.innerHTML = cs.map(function (c) {
-    return '<div class="carga"><h3>' + nombreTipo(c.tipo) + ' — corte ' + fmtFecha(c.fechaCorte) + '</h3>' +
-      '<p>Archivo: ' + esc(c.nombre) + '</p>' +
-      '<p>Formato: ' + esc(c.formato) + ' · ' + c.filas.length + ' registros · Cargado: ' + esc(new Date(c.fechaCarga).toLocaleString('es-MX')) + '</p>' +
-      '<div class="acciones"><button class="btn btn-danger" data-borrar="' + c.id + '" type="button">Borrar corte</button></div></div>';
-  }).join('');
-}
-
-function renderTodo() { renderMerma(); renderTransf(); renderBloq(); renderCargas(); }
-
-/* ---- subida e importación ---- */
-function leerArchivo(file) {
-  return new Promise(function (resolve, reject) {
-    var reader = new FileReader();
-    reader.onload = function (e) {
-      try {
-        var wb = XLSX.read(e.target.result, { type: 'array', cellDates: true });
-        var det = detectarTipo(wb);
-        if (!det.tipo) { resolve({ nombre: file.name, error: det.error }); return; }
-        var filas = [], fechas = [], advertencia = null, resumenHoja = null;
-        if (det.tipo === 'merma') {
-          filas = parseMerma(filasDeHoja(wb, det.hoja));
-          fechas = filas.map(function (f) { return f.fechaEntrada; });
-        } else if (det.tipo === 'transf' && det.formato === 'destino') {
-          filas = parseTransfDestino(filasDeHoja(wb, det.hoja));
-          fechas = filas.map(function (f) { return f.fechaEmb; });
-        } else if (det.tipo === 'transf' && det.formato === 'detallado') {
-          filas = parseTransfDetallado(filasDeHoja(wb, det.hoja));
-          fechas = filas.map(function (f) { return f.fechaEmb; });
-        } else if (det.tipo === 'transf') {
-          filas = parseTransfSAP(wb);
-          fechas = filas.map(function (f) { return f.fechaCont; });
-        } else if (det.tipo === 'bloq' && det.formato === 'concentrado') {
-          var pc = parseBloqConcentrado(wb);
-          filas = pc.filas; resumenHoja = pc.resumen;
-          var tot = filas.reduce(function (a, f) { return a + f.valor; }, 0);
-          if (resumenHoja && Math.abs(resumenHoja.total - tot) > 0.01) {
-            advertencia = 'La hoja RESUMEN suma ' + fmtDinero(resumenHoja.total) + ' y el concentrado suma ' + fmtDinero(tot) + '. Revisa el archivo.';
-          }
-        } else {
-          filas = parseBloqOriginal(filasDeHoja(wb, det.hoja));
-        }
-        if (!filas.length) { resolve({ nombre: file.name, error: 'El archivo se reconoció como ' + nombreTipo(det.tipo) + ' (' + det.formato + '), pero no trae renglones con datos.' }); return; }
-        resolve({
-          id: 'p' + Date.now() + Math.floor(Math.random() * 1000),
-          nombre: file.name, tipo: det.tipo, formato: det.formato,
-          fechaCorte: sugerirCorte(file.name, fechas),
-          filas: filas, resumenHoja: resumenHoja, advertencia: advertencia
-        });
-      } catch (err) { reject(err); }
-    };
-    reader.onerror = function () { reject(new Error('No se pudo leer el archivo.')); };
-    reader.readAsArrayBuffer(file);
-  });
-}
-
-function resumenPendiente(p) {
-  if (p.tipo === 'merma') return 'Total: ' + fmtDinero(p.filas.reduce(function (a, f) { return a + f.costoTotal; }, 0)) + ' · ' + p.filas.length + ' registros';
-  if (p.tipo === 'transf' && p.formato === 'destino') {
-    var pe = p.filas.reduce(function (a, f) { return a + f.piezasEmb; }, 0);
-    var pp = p.filas.reduce(function (a, f) { return a + f.difFinal; }, 0);
-    return p.filas.length + ' documentos · ' + fmtNum(pe) + ' piezas embarcadas · ' + fmtNum(pp) + ' pendientes';
-  }
-  if (p.tipo === 'transf' && p.formato === 'detallado') {
-    var im = p.filas.reduce(function (a, f) { return a + f.costo; }, 0);
-    var pd = p.filas.reduce(function (a, f) { return a + f.piezasPend; }, 0);
-    var docs = {};
-    p.filas.forEach(function (f) { docs[f.doc] = 1; });
-    return Object.keys(docs).length + ' documentos · ' + fmtDinero(im) + ' · ' + fmtNum(pd) + ' piezas pendientes · ' + p.filas.length + ' renglones';
-  }
-  if (p.tipo === 'transf') return 'Total: ' + fmtDinero(p.filas.reduce(function (a, f) { return a + f.importe; }, 0)) + ' · ' + p.filas.length + ' documentos';
-  if (p.formato === 'concentrado') return 'Total: ' + fmtDinero(p.filas.reduce(function (a, f) { return a + f.valor; }, 0)) + ' · ' + p.filas.length + ' registros';
-  return 'Impacto: ' + fmtDinero(p.filas.reduce(function (a, f) { return a + Math.abs(f.importe); }, 0)) + ' · ' + p.filas.length + ' registros';
-}
-
-function renderPendientes() {
-  var el = $('pendientes');
-  if (!pendientes.length) { el.innerHTML = ''; return; }
-  el.innerHTML = pendientes.map(function (p) {
-    if (p.error) {
-      return '<div class="pendiente"><h3>' + esc(p.nombre) + '</h3><div class="error">' + esc(p.error).replace(/\n/g, '<br>') + '</div>' +
-        '<div class="acciones"><button class="btn" data-quitar="' + p.id + '" type="button">Quitar</button></div></div>';
-    }
-    return '<div class="pendiente"><h3>' + esc(p.nombre) + '</h3>' +
-      '<div class="tipo">Detectado: ' + nombreTipo(p.tipo) + ' · formato ' + esc(p.formato) + '</div>' +
-      '<div class="totales">' + esc(resumenPendiente(p)) + '</div>' +
-      (p.advertencia ? '<div class="alerta">' + esc(p.advertencia) + '</div>' : '') +
-      '<label>Fecha de corte: <input type="date" data-corte="' + p.id + '" value="' + p.fechaCorte + '"></label>' +
-      '<div class="acciones"><button class="btn btn-primary" data-importar="' + p.id + '" type="button">Importar como corte</button>' +
-      '<button class="btn" data-quitar="' + p.id + '" type="button">Cancelar</button></div></div>';
-  }).join('');
-}
-
-function importarPendiente(id) {
-  var p = pendientes.find(function (x) { return x.id === id; });
-  if (!p || p.error) return;
-  var input = document.querySelector('[data-corte="' + id + '"]');
-  var fechaCorte = (input && input.value) ? input.value : p.fechaCorte;
-  state.cargas.push({
-    id: 'c' + Date.now() + Math.floor(Math.random() * 1000),
-    tipo: p.tipo, formato: p.formato, nombre: p.nombre,
-    fechaCorte: fechaCorte, fechaCarga: new Date().toISOString(),
-    filas: p.filas, resumenHoja: p.resumenHoja || null, advertencia: p.advertencia || null
-  });
-  // Máximo 12 cortes por tipo para no llenar el localStorage
-  ['merma', 'transf', 'bloq'].forEach(function (t) {
-    var cs = state.cargas.filter(function (c) { return c.tipo === t; })
-      .sort(function (a, b) { return (a.fechaCorte < b.fechaCorte) ? -1 : 1; });
-    if (cs.length > 12) {
-      var viejos = cs.slice(12).map(function (c) { return c.id; });
-      state.cargas = state.cargas.filter(function (c) { return viejos.indexOf(c.id) < 0; });
-    }
-  });
-  pendientes = pendientes.filter(function (x) { return x.id !== id; });
-  guardarEstado(); renderPendientes(); renderTodo();
-  toast(nombreTipo(p.tipo) + ' importado: corte ' + fmtFecha(fechaCorte) + '.');
-}
-
-async function procesarArchivos(files) {
-  for (var i = 0; i < files.length; i++) {
-    var f = files[i];
-    if (!/\.xlsx?$/i.test(f.name)) { toast('El archivo ' + f.name + ' no es Excel (.xlsx).'); continue; }
-    try {
-      var p = await leerArchivo(f);
-      p.id = p.id || ('p' + Date.now() + i);
-      pendientes.push(p);
-    } catch (e) { pendientes.push({ id: 'p' + Date.now() + i, nombre: f.name, error: 'No se pudo leer el archivo: ' + e.message }); }
-  }
-  renderPendientes();
-}
-
-/* ---- exportación a Excel ---- */
 function panelAOA(tipo, carga) {
   var L = [];
+  if (tipo === 'rot') {
+    var rp = computeRotativos(carga.filas);
+    L.push(['ROTATIVOS — PRODUCTIVIDAD DE CONTEOS (semana de jueves a miércoles)']);
+    L.push(['Corte', carga.fechaCorte, 'Archivo', carga.nombre]);
+    L.push(['Artículos totales', rp.totalArticulos, 'Conteos', rp.totalConteos, 'Semanas', rp.semanas.length]);
+    L.push([]);
+    L.push(['PRODUCTIVIDAD SEMANAL POR SUCURSAL']);
+    L.push(['Semana', 'Sucursal', 'Artículos', 'Meta', '% cumplimiento', 'Conteos', 'DIFU', 'DIFP', 'Art. con diferencia', 'Exactitud', 'Estatus']);
+    rp.filas.forEach(function (x) { L.push([x.etiqueta, x.suc, x.articulos, x.meta, x.cumplimiento / 100, x.conteos, x.difu, x.difp, x.conDif, x.exactitud / 100, x.estatus]); });
+    return L;
+  }
   if (tipo === 'merma') {
     var p = computeMerma(carga.filas, carga.fechaCorte);
     L.push(['MERMA PENDIENTE DE LIBERAR', '', '', '', '', '', '', '']);
@@ -1032,6 +704,10 @@ function panelAOA(tipo, carga) {
   return L;
 }
 function detalleJSON(tipo, carga) {
+  if (tipo === 'rot') return carga.filas.map(function (f) {
+    return { 'Sucursal': f.suc, 'Fecha': f.fecha, 'ROL': f.rol, 'Artículo': f.articulo, 'Descripción': f.descripcion,
+      'TEO': f.teo, 'FIS': f.fis, 'DIFU': f.difu, 'DIFP': f.difp };
+  });
   if (tipo === 'merma') return carga.filas.map(function (f) {
     return { 'Centro': f.centro, 'Fecha de entrada': f.fechaEntrada, 'Documento material': f.docMaterial, 'Material': f.material,
       'Texto breve material': f.texto, 'Ctd.en UM entrada': f.cantidad, 'Costo Unitario': f.costoUnit, 'Costo Total': f.costoTotal, 'Usuario': f.usuario };
@@ -1061,10 +737,699 @@ function detalleJSON(tipo, carga) {
       'Descripción': f.descripcion, 'Departamento': f.departamento, 'Clase': f.clase };
   });
 }
+/* ---- resúmenes en texto plano para correo ---- */
+/* Negativo como "-$6,593.28", positivo como "$39,996.46" (formato de sus correos). */
+function fmtDineroSigno(v) {
+  v = num(v);
+  return (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+/* DIFP con signo explícito: "-$14,045.24", "+$7,466.10", "$0.00". */
+function fmtDifp(v) {
+  v = num(v);
+  var signo = v < 0 ? '-$' : v > 0 ? '+$' : '$';
+  return signo + Math.abs(v).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function lineaVariacion(actual, anterior) {
+  if (anterior === null || anterior === undefined) return '';
+  var dif = actual - anterior;
+  if (Math.abs(dif) < 0.005) return ' (sin cambio vs corte anterior)';
+  var pct = anterior ? (dif / Math.abs(anterior) * 100) : 0;
+  return ' (' + (dif < 0 ? '▼' : '▲') + ' ' + fmtDinero(Math.abs(dif)) + ', ' + Math.abs(pct).toFixed(1) + '% vs corte anterior)';
+}
+function resumenMermaTexto(carga, totalAnterior) {
+  var p = computeMerma(carga.filas, carga.fechaCorte);
+  var L = [];
+  L.push('Merma Pendiente de Liberar');
+  L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · ' + p.registros + ' registros');
+  L.push('MONTO PENDIENTE: ' + fmtDinero(p.total) + lineaVariacion(p.total, totalAnterior));
+  L.push('REGISTROS: ' + p.registros + ' · SUCURSALES: ' + p.porCentro.length + ' · CRÍTICOS: ' + p.porCentro.filter(function (x) { return x.nivel === 'CRITICO'; }).length);
+  var dist = RANGOS.map(function (r) {
+    var v = p.antiguedad[r];
+    var pct = p.total ? (v.monto / p.total * 100) : 0;
+    return r + ' días: ' + fmtDinero(v.monto) + ' (' + pct.toFixed(1) + '%)';
+  }).join(' · ');
+  L.push('Distribución por antigüedad: ' + dist);
+  L.push('Detalle por sucursal:');
+  p.porCentro.forEach(function (x) {
+    L.push('  ' + x.centro + ': ' + fmtDinero(x.monto) + ' · ' + x.registros + ' registros · ' + x.nivel);
+  });
+  return L.join('\n');
+}
+function resumenBloqTexto(carga) {
+  var L = [];
+  L.push('Stock Bloqueado');
+  L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · Formato: ' + (carga.formato === 'concentrado' ? 'Concentrado' : 'Bloq original'));
+  if (carga.formato === 'concentrado') {
+    var p = computeBloqConc(carga.filas, carga.resumenHoja);
+    L.push('IMPORTE BLOQUEADO: ' + fmtDinero(p.total) + ' · REGISTROS: ' + p.registros + ' · UNIDADES BLOQUEADAS: ' + fmtNum(p.unidades, 3) + ' · CENTROS: ' + p.porCentro.length);
+    L.push('Importe por centro: ' + p.porCentro.map(function (x) { return x.clave + ' ' + fmtDineroSigno(x.valor); }).join(' · '));
+    L.push('Por Jerarquía 2: ' + p.porJerarquia.map(function (x) { return x.clave + ' ' + fmtDineroSigno(x.valor); }).join(' · '));
+  } else {
+    var q = computeBloqOrig(carga.filas);
+    L.push('IMPACTO ABSOLUTO: ' + fmtDinero(q.impacto) + ' · IMPORTE NETO: ' + fmtDinero(q.neto) + ' · REGISTROS: ' + q.registros + ' · STOCK +: ' + fmtNum(q.stockPos, 1) + ' / STOCK -: ' + fmtNum(q.stockNeg, 1));
+    L.push('Impacto por sucursal: ' + q.porSucursal.map(function (x) { return x.clave + ' ' + fmtDineroSigno(x.impacto); }).join(' · '));
+    L.push('Por departamento: ' + q.porDepartamento.map(function (x) { return x.clave + ' ' + fmtDineroSigno(x.importe); }).join(' · '));
+  }
+  return L.join('\n');
+}
+function resumenTransfTexto(carga) {
+  var L = [];
+  L.push('Transferencias Pendientes');
+  if (carga.formato === 'detallado') {
+    var d = computeTransfDetallado(carga.filas);
+    L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · ' + d.documentos + ' documentos');
+    L.push('IMPORTE PENDIENTE: ' + fmtDinero(d.importeTotal) + ' · PIEZAS PENDIENTES: ' + fmtNum(d.piezasPend) + ' · RENGLONES: ' + d.registros);
+    if (d.masAntiguo) L.push('Documento más antiguo: ' + (d.masAntiguo.origenDesc || d.masAntiguo.origen) + ' ' + fmtFecha(d.masAntiguo.fechaEmb) + ', ' + d.masAntiguo.dias + ' días, ' + fmtDinero(d.masAntiguo.importe) + ', ' + fmtNum(d.masAntiguo.piezasPend) + ' piezas');
+    L.push('Por origen: ' + d.porOrigen.map(function (x) { return x.clave + ' ' + fmtDinero(x.importe); }).join(' · '));
+    L.push('Por destino: ' + d.porDestino.map(function (x) { return x.clave + ' ' + fmtDinero(x.importe); }).join(' · '));
+  } else if (carga.formato === 'destino') {
+    var p = computeTransfDestino(carga.filas);
+    L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · ' + p.documentos + ' documentos');
+    L.push('PIEZAS EMBARCADAS: ' + fmtNum(p.piezasEmb) + ' · PIEZAS PENDIENTES: ' + fmtNum(p.piezasPend) + (p.costoTotal ? ' · IMPORTE: ' + fmtDinero(p.costoTotal) : ''));
+    if (p.masAntiguo) L.push('Documento más antiguo: ' + (p.masAntiguo.origenDesc || p.masAntiguo.origen) + ' ' + fmtFecha(p.masAntiguo.fechaEmb) + ', ' + p.masAntiguo.dias + ' días, ' + fmtNum(p.masAntiguo.difFinal) + ' piezas');
+    L.push('Por origen: ' + p.porOrigen.map(function (x) { return x.clave + ' ' + fmtNum(x.piezas) + ' piezas'; }).join(' · '));
+    L.push('Por destino: ' + p.porDestino.map(function (x) { return x.clave + ' ' + fmtNum(x.piezas) + ' piezas'; }).join(' · '));
+  } else {
+    var q = computeTransfSAP(carga.filas);
+    L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · ' + q.documentos + ' documentos');
+    L.push('IMPORTE PENDIENTE: ' + fmtDinero(q.importeTotal) + ' · DOCUMENTOS: ' + q.documentos);
+    if (q.masAntiguo) L.push('Documento más antiguo: ' + (q.masAntiguo.origenDesc || q.masAntiguo.origen) + ' ' + fmtFecha(q.masAntiguo.fechaCont) + ', ' + q.masAntiguo.dias + ' días, ' + fmtDinero(q.masAntiguo.importe));
+    L.push('Por origen: ' + q.porOrigen.map(function (x) { return x.clave + ' ' + fmtDinero(x.importe); }).join(' · '));
+  }
+  return L.join('\n');
+}
+function resumenRotTexto(carga) {
+  var p = computeRotativos(carga.filas);
+  var L = [];
+  L.push('Rotativos — Productividad de conteos');
+  var sem = p.semanas.length ? p.semanas[0] : null;
+  L.push('Semana: ' + (sem ? etiquetaSemana(sem).replace('Semana ', '') : '—') + ' · Archivo: ' + carga.nombre);
+  if (sem) {
+    p.filas.filter(function (x) { return x.semana === sem; }).forEach(function (x) {
+      L.push(x.suc + ': ' + x.articulos + ' artículos de ' + x.meta + ' (' + Math.round(x.cumplimiento) + '%) · ' + x.conteos + (x.conteos === 1 ? ' conteo' : ' conteos') + ' · DIFU ' + fmtNum(x.difu) + ' · DIFP ' + fmtDifp(x.difp));
+    });
+  }
+  return L.join('\n');
+}
+/* Recibe los TEXTOS ya armados {merma, transf, bloq, rot}; junta los que existan
+   con una línea en blanco entre ellos. */
+function resumenCompletoTexto(textos) {
+  var partes = [];
+  if (textos.merma) partes.push(textos.merma);
+  if (textos.transf) partes.push(textos.transf);
+  if (textos.bloq) partes.push(textos.bloq);
+  if (textos.rot) partes.push(textos.rot);
+  return partes.join('\n\n');
+}
+
+/* Exportación para Node (verificación) */
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    parseFecha: parseFecha, num: num, valorNumerico: valorNumerico, detectarTipo: detectarTipo,
+    parseMerma: parseMerma, parseTransfDestino: parseTransfDestino,
+    parseTransfDetallado: parseTransfDetallado, computeTransfDetallado: computeTransfDetallado,
+    parseTransfSAP: parseTransfSAP, parseBloqConcentrado: parseBloqConcentrado,
+    parseBloqOriginal: parseBloqOriginal, sugerirCorte: sugerirCorte,
+    computeMerma: computeMerma, computeTransfDestino: computeTransfDestino,
+    computeTransfSAP: computeTransfSAP, computeBloqConc: computeBloqConc,
+    computeBloqOrig: computeBloqOrig, filasDeHoja: filasDeHoja,
+    parseRotativos: parseRotativos, computeRotativos: computeRotativos,
+    juevesDe: juevesDe, etiquetaSemana: etiquetaSemana,
+    panelAOA: panelAOA, detalleJSON: detalleJSON,
+    resumenMermaTexto: resumenMermaTexto, resumenBloqTexto: resumenBloqTexto,
+    resumenTransfTexto: resumenTransfTexto, resumenRotTexto: resumenRotTexto,
+    resumenCompletoTexto: resumenCompletoTexto, fmtDineroSigno: fmtDineroSigno, fmtDifp: fmtDifp
+  };
+}
+
+/* ================= UI (solo navegador) ================= */
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+
+var state = { cargas: [], seguimiento: {} };
+var pendientes = [];
+var tabActual = 'merma';
+var resumenes = {}; /* textos listos para copiar, por reporte: {merma, transf, bloq, rot} */
+
+function cargarEstado() {
+  try {
+    var raw = localStorage.getItem(LS_KEY);
+    if (raw) { var s = JSON.parse(raw); if (s && s.cargas) state = s; }
+  } catch (e) { state = { cargas: [], seguimiento: {} }; }
+  if (!state.seguimiento) state.seguimiento = {};
+  if (!state.cargas) state.cargas = [];
+}
+function guardarEstado() {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(state)); }
+  catch (e) { toast('No se pudo guardar en este dispositivo (espacio lleno). Borra cortes viejos en Cargas.'); }
+}
+function toast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg; t.classList.remove('hidden');
+  setTimeout(function () { t.classList.add('hidden'); }, 4000);
+}
+function $ (id) { return document.getElementById(id); }
+function ultimaCarga(tipo) {
+  var cs = state.cargas.filter(function (c) { return c.tipo === tipo; });
+  cs.sort(function (a, b) { return (a.fechaCorte < b.fechaCorte) ? 1 : -1; });
+  return cs.length ? cs[0] : null;
+}
+function cortesDe(tipo) {
+  return state.cargas.filter(function (c) { return c.tipo === tipo; })
+    .sort(function (a, b) { return (a.fechaCorte < b.fechaCorte) ? -1 : 1; });
+}
+function nombreTipo(tipo) {
+  return tipo === 'merma' ? 'Merma' : tipo === 'transf' ? 'Transferencias' : tipo === 'rot' ? 'Rotativos' : 'Bloqueado';
+}
+
+/* ---- gráficas simples ---- */
+function dibujarBarras(canvas, items, fmt) {
+  if (!canvas) return;
+  var dpr = window.devicePixelRatio || 1;
+  var W = canvas.clientWidth || 320, H = 180;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  var ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+  if (!items.length) { ctx.fillStyle = '#5a6b7c'; ctx.font = '13px sans-serif'; ctx.fillText('Sin datos', 10, 30); return; }
+  var max = Math.max.apply(null, items.map(function (i) { return i.valor; })) || 1;
+  var bw = Math.min(48, (W - 20) / items.length - 10);
+  var grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#2563eb');
+  grad.addColorStop(1, '#0e7c7b');
+  items.forEach(function (it, i) {
+    var h = Math.max(2, (it.valor / max) * (H - 52));
+    var x = 10 + i * ((W - 20) / items.length) + ((W - 20) / items.length - bw) / 2;
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, H - 30 - h, bw, h);
+    ctx.fillStyle = '#1c2b3a'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(fmt ? fmt(it.valor) : fmtNum(it.valor), x + bw / 2, H - 34 - h);
+    ctx.fillText(it.etiqueta, x + bw / 2, H - 12);
+  });
+}
+function donutHTML(ant, total, esPiezas) {
+  var acc = 0, partes = [], leyenda = '';
+  RANGOS.forEach(function (r, i) {
+    var v = ant[r];
+    var val = esPiezas ? v.piezas : v.monto;
+    var pct = total ? (val / total * 100) : 0;
+    var ini = acc; acc += pct;
+    partes.push(COLRES_RANGO_SAFE(i) + ' ' + ini.toFixed(1) + '% ' + acc.toFixed(1) + '%');
+    leyenda += '<div><span class="punto" style="background:' + COLORES_RANGO[i] + '"></span>' + r + ' días: ' +
+      (esPiezas ? fmtNum(val) + ' piezas' : fmtDinero(val)) + ' (' + pct.toFixed(1) + '%)</div>';
+  });
+  var bg = partes.length ? 'conic-gradient(' + partes.join(', ') + ')' : '#e8eef4';
+  return '<div class="donut-wrap"><div class="donut" style="background:' + bg + '"></div><div class="leyenda">' + leyenda + '</div></div>';
+}
+function COLRES_RANGO_SAFE(i) { return COLORES_RANGO[i]; }
+function barrasHTML(titulo, items, fmt) {
+  if (!items.length) return '';
+  var max = Math.max.apply(null, items.map(function (i) { return i.valor; })) || 1;
+  var html = '<div class="grafica"><h3>' + esc(titulo) + '</h3>';
+  items.forEach(function (it) {
+    var pct = (it.valor / max * 100).toFixed(1);
+    html += '<div class="barra-fila"><span class="blabel">' + esc(it.etiqueta) + '</span>' +
+      '<span class="btrack"><span class="bfill" style="display:block;width:' + pct + '%"></span></span>' +
+      '<span class="bvalor">' + (fmt ? fmt(it.valor) : fmtNum(it.valor)) + '</span></div>';
+  });
+  return html + '</div>';
+}
+function tablaHTML(headers, rowsHTML, totalRowHTML) {
+  var h = headers.map(function (x) { return '<th class="' + (x.num ? 'num' : '') + '">' + esc(x.t) + '</th>'; }).join('');
+  return '<div class="tabla-scroll"><table><thead><tr>' + h + '</tr></thead><tbody>' + rowsHTML +
+    (totalRowHTML ? '<tr class="total-row">' + totalRowHTML + '</tr>' : '') + '</tbody></table></div>';
+}
+function segControl(tipo, clave, estadoActual, notaActual) {
+  var s = state.seguimiento[clave] || {};
+  var est = s.estado || estadoActual || 'Pendiente';
+  var nota = (s.nota !== undefined) ? s.nota : (notaActual || '');
+  var opts = ['Pendiente', 'En seguimiento', 'Liberado', 'Escalado'].map(function (o) {
+    return '<option value="' + o + '"' + (o === est ? ' selected' : '') + '>' + o + '</option>';
+  }).join('');
+  return '<select class="estado" data-seg="' + esc(clave) + '" data-campo="estado">' + opts + '</select>' +
+    '<br><input class="nota" data-seg="' + esc(clave) + '" data-campo="nota" placeholder="Nota…" value="' + esc(nota) + '">';
+}
+function variacionHTML(actual, anterior, invertida) {
+  if (anterior === null || anterior === undefined) return '<div class="variacion igual">Primer corte</div>';
+  var dif = actual - anterior;
+  if (Math.abs(dif) < 0.005) return '<div class="variacion igual">Sin cambio vs corte anterior</div>';
+  var pct = anterior ? (dif / Math.abs(anterior) * 100) : 0;
+  var baja = dif < 0;
+  var buena = invertida ? baja : !baja;
+  var cls = buena ? 'baja' : 'sube';
+  return '<div class="variacion ' + cls + '">' + (baja ? '▼' : '▲') + ' ' + fmtDinero(Math.abs(dif)) +
+    ' (' + Math.abs(pct).toFixed(1) + '%) vs corte anterior</div>';
+}
+
+/* ---- resumen para correo (copiar al portapapeles) ---- */
+function copiarTexto(texto) {
+  function hecho() { toast('Resumen copiado'); }
+  function fallo() { toast('No se pudo copiar automáticamente. Selecciona el texto de la vista previa y cópialo manualmente.'); }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(texto).then(hecho, function () { copiarFallback(texto, hecho, fallo); });
+  } else { copiarFallback(texto, hecho, fallo); }
+}
+function copiarFallback(texto, hecho, fallo) {
+  try {
+    var ta = document.createElement('textarea');
+    ta.value = texto;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (ok) hecho(); else fallo();
+  } catch (e) { fallo(); }
+}
+function resumenBoxHTML(tipo, texto) {
+  return '<div class="resumen-box"><h3>Resumen para correo</h3>' +
+    '<pre class="resumen-preview">' + esc(texto) + '</pre>' +
+    '<button class="btn" data-copiar="' + tipo + '" type="button">Copiar resumen para correo</button></div>';
+}
+function renderResumenCompleto() {
+  var el = $('resumen-completo-preview');
+  if (!el) return;
+  var txt = resumenCompletoTexto(resumenes);
+  var btn = document.querySelector('[data-copiar="completo"]');
+  if (!txt) {
+    el.innerHTML = '<p class="hint">Sube al menos un archivo para generar el resumen completo.</p>';
+    if (btn) btn.disabled = true;
+    return;
+  }
+  el.innerHTML = '<div class="resumen-box"><h3>Resumen completo para correo</h3><pre class="resumen-preview">' + esc(txt) + '</pre></div>';
+  if (btn) btn.disabled = false;
+}
+
+/* ---- render de paneles ---- */
+function renderMerma() {
+  var c = ultimaCarga('merma');
+  var el = $('merma-panel'), info = $('merma-corte');
+  if (!c) { info.textContent = ''; resumenes.merma = ''; el.innerHTML = '<p class="vacio">Aún no hay merma cargada. Sube el archivo de merma arriba.</p>'; return; }
+  var p = computeMerma(c.filas, c.fechaCorte);
+  var cortes = cortesDe('merma');
+  var ant = cortes.length > 1 ? computeMerma(cortes[cortes.length - 2].filas, cortes[cortes.length - 2].fechaCorte).total : null;
+  info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · ' + c.filas.length + ' registros';
+  var html = '<div class="totales">' +
+    '<div class="total-card destacado"><div class="etiqueta">Monto pendiente</div><div class="valor">' + fmtDinero(p.total) + '</div>' + variacionHTML(p.total, ant, true) + '</div>' +
+    '<div class="total-card"><div class="etiqueta">Registros</div><div class="valor">' + p.registros + '</div></div>' +
+    '<div class="total-card"><div class="etiqueta">Sucursales</div><div class="valor">' + p.porCentro.length + '</div></div>' +
+    '<div class="total-card"><div class="etiqueta">Críticos</div><div class="valor">' + p.porCentro.filter(function (x) { return x.nivel === 'CRITICO'; }).length + '</div></div></div>';
+  html += '<div class="grafica"><h3>Evolución por fecha de entrada</h3><canvas id="cv-merma"></canvas></div>';
+  html += '<div class="grafica"><h3>Distribución por antigüedad</h3>' + donutHTML(p.antiguedad, p.total, false) + '</div>';
+  html += barrasHTML('Top sucursales por monto', p.porCentro.slice(0, 6).map(function (x) { return { etiqueta: x.centro, valor: x.monto }; }), fmtDinero);
+  var rows = p.porCentro.map(function (x) {
+    var clave = 'merma:' + x.centro;
+    return '<tr><td>' + esc(x.centro) + '</td><td class="num">' + fmtDinero(x.monto) + '</td><td class="num">' + x.pct.toFixed(1) + '%</td>' +
+      '<td class="num">' + x.registros + '</td><td>' + fmtFecha(x.entradaMasAntigua) + '</td><td class="num">' + (x.dias === null ? '—' : x.dias) + '</td>' +
+      '<td><span class="nivel ' + x.nivel.toLowerCase() + '">' + x.nivel + '</span></td><td>' + esc(x.accion) + '</td>' +
+      '<td>' + segControl('merma', clave) + '</td></tr>';
+  }).join('');
+  html += '<h3>Detalle por sucursal</h3>' + tablaHTML(
+    [{ t: 'Sucursal' }, { t: 'Monto', num: true }, { t: '%', num: true }, { t: 'Reg.', num: true }, { t: 'Entrada más antigua' }, { t: 'Días', num: true }, { t: 'Nivel' }, { t: 'Acción' }, { t: 'Seguimiento' }],
+    rows, '<td>Total</td><td class="num">' + fmtDinero(p.total) + '</td><td class="num">100%</td><td class="num">' + p.registros + '</td><td></td><td></td><td></td><td></td><td></td>');
+  el.innerHTML = html;
+  dibujarBarras($('cv-merma'), p.evolucion.map(function (e) { return { etiqueta: e.fecha.slice(5), valor: e.monto }; }), fmtDinero);
+  var ev = cortes.map(function (cc) { return { fecha: cc.fechaCorte, monto: computeMerma(cc.filas, cc.fechaCorte).total }; });
+  if (ev.length > 1) {
+    el.insertAdjacentHTML('beforeend', '<div class="grafica"><h3>Evolución por corte</h3><canvas id="cv-merma-cortes"></canvas></div>');
+    dibujarBarras($('cv-merma-cortes'), ev.map(function (e) { return { etiqueta: e.fecha.slice(5), valor: e.monto }; }), fmtDinero);
+  }
+  resumenes.merma = resumenMermaTexto(c, ant);
+  el.insertAdjacentHTML('beforeend', resumenBoxHTML('merma', resumenes.merma));
+}
+
+function renderTransf() {
+  var c = ultimaCarga('transf');
+  var el = $('transf-panel'), info = $('transf-corte');
+  if (!c) { info.textContent = ''; resumenes.transf = ''; el.innerHTML = '<p class="vacio">Aún no hay transferencias cargadas. Sube el archivo de transferencias arriba.</p>'; return; }
+  info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · Formato: ' + (c.formato === 'destino' ? 'Destino' : c.formato === 'detallado' ? 'Detallado' : 'SAP');
+  var html = '';
+  if (c.formato === 'detallado') {
+    var d = computeTransfDetallado(c.filas);
+    html += '<div class="totales">' +
+      '<div class="total-card destacado"><div class="etiqueta">Importe pendiente</div><div class="valor">' + fmtDinero(d.importeTotal) + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Documentos</div><div class="valor">' + d.documentos + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Piezas pendientes</div><div class="valor">' + fmtNum(d.piezasPend) + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Más antiguo</div><div class="valor">' + (d.masAntiguo ? d.masAntiguo.dias + ' días' : '—') + '</div></div></div>';
+    html += '<div class="grafica"><h3>Distribución por antigüedad</h3>' + donutHTML(d.antiguedad, d.importeTotal, false) + '</div>';
+    html += barrasHTML('Pendiente por sucursal origen', d.porOrigen.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.importe }; }), fmtDinero);
+    html += barrasHTML('Pendiente por sucursal destino', d.porDestino.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.importe }; }), fmtDinero);
+    var topRows = d.topArticulos.map(function (f) {
+      var clave = 'transf:art:' + f.doc + ':' + f.articulo;
+      return '<tr><td>' + esc(f.articulo) + '</td><td>' + esc(f.texto) + '</td><td>' + esc(f.doc) + '</td><td class="num">' + fmtDinero(f.costo) + '</td><td class="num">' + fmtNum(f.piezasPend) + '</td><td class="num">' + f.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
+    }).join('');
+    html += '<h3>Artículos más críticos</h3>' + tablaHTML(
+      [{ t: 'Artículo' }, { t: 'Texto' }, { t: 'Documento' }, { t: 'Costo', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }], topRows, '');
+    var docRows = d.porDoc.map(function (x) {
+      var clave = 'transf:' + x.doc;
+      return '<tr><td>' + esc(x.doc) + '</td><td>' + fmtFecha(x.fechaEmb) + '</td><td>' + esc(x.origen) + ' ' + esc(x.origenDesc) + '</td>' +
+        '<td>' + esc(x.destino) + ' ' + esc(x.destinoDesc) + '</td><td class="num">' + x.articulos + '</td><td class="num">' + fmtDinero(x.importe) + '</td>' +
+        '<td class="num">' + fmtNum(x.piezasPend) + '</td><td class="num">' + x.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
+    }).join('');
+    html += '<h3>Detalle por documento</h3>' + tablaHTML(
+      [{ t: 'Documento' }, { t: 'Fecha embarque' }, { t: 'Origen' }, { t: 'Destino' }, { t: 'Artículos', num: true }, { t: 'Importe', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }],
+      docRows, '<td>Total</td><td></td><td></td><td></td><td class="num">' + d.registros + '</td><td class="num">' + fmtDinero(d.importeTotal) + '</td><td class="num">' + fmtNum(d.piezasPend) + '</td><td></td><td></td>');
+    var artRows = c.filas.slice().sort(function (a, b) { return b.costo - a.costo; }).map(function (f) {
+      var clave = 'transf:art:' + f.doc + ':' + f.articulo;
+      return '<tr><td>' + esc(f.articulo) + '</td><td>' + esc(f.texto) + '</td><td>' + esc(f.doc) + '</td><td>' + esc(f.origen) + ' → ' + esc(f.destino) + '</td><td class="num">' + fmtDinero(f.costo) + '</td><td class="num">' + fmtNum(f.piezasEmb) + '</td><td class="num">' + fmtNum(f.piezasPend) + '</td><td class="num">' + f.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
+    }).join('');
+    html += '<h3>Detalle por artículo</h3>' + tablaHTML(
+      [{ t: 'Artículo' }, { t: 'Texto' }, { t: 'Documento' }, { t: 'Origen → Destino' }, { t: 'Costo', num: true }, { t: 'Piezas emb.', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }],
+      artRows, '');
+    if (d.masAntiguo) html += '<p class="hint">Documento más antiguo: ' + esc(d.masAntiguo.doc) + ' de ' + esc(d.masAntiguo.origenDesc || d.masAntiguo.origen) + ' a ' + esc(d.masAntiguo.destinoDesc || d.masAntiguo.destino) + ' (' + d.masAntiguo.dias + ' días, ' + fmtDinero(d.masAntiguo.importe) + ', ' + fmtNum(d.masAntiguo.piezasPend) + ' piezas).</p>';
+  } else if (c.formato === 'destino') {
+    var p = computeTransfDestino(c.filas);
+    html += '<div class="totales">' +
+      '<div class="total-card destacado"><div class="etiqueta">Documentos pendientes</div><div class="valor">' + p.documentos + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Piezas embarcadas</div><div class="valor">' + fmtNum(p.piezasEmb) + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Piezas pendientes</div><div class="valor">' + fmtNum(p.piezasPend) + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Importe</div><div class="valor">' + (p.costoTotal ? fmtDinero(p.costoTotal) : '—') + '</div><div class="sub">' + (p.costoTotal ? '' : 'El archivo trae Costo Total en 0') + '</div></div></div>';
+    html += '<div class="grafica"><h3>Distribución por antigüedad (piezas pendientes)</h3>' + donutHTML(p.antiguedad, p.piezasPend, true) + '</div>';
+    html += barrasHTML('Pendiente por sucursal origen (piezas)', p.porOrigen.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.piezas }; }), fmtNum);
+    html += barrasHTML('Pendiente por sucursal destino (piezas)', p.porDestino.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.piezas }; }), fmtNum);
+    var rows = c.filas.slice().sort(function (a, b) { return b.dias - a.dias; }).map(function (f) {
+      var clave = 'transf:' + f.doc;
+      return '<tr><td>' + esc(f.doc) + '</td><td>' + fmtFecha(f.fechaEmb) + '</td><td>' + esc(f.origen) + ' ' + esc(f.origenDesc) + '</td>' +
+        '<td>' + esc(f.destino) + ' ' + esc(f.destinoDesc) + '</td><td class="num">' + fmtNum(f.piezasEmb) + '</td><td class="num">' + fmtNum(f.difFinal) + '</td>' +
+        '<td class="num">' + f.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
+    }).join('');
+    html += '<h3>Detalle por documento</h3>' + tablaHTML(
+      [{ t: 'Documento' }, { t: 'Fecha embarque' }, { t: 'Origen' }, { t: 'Destino' }, { t: 'Piezas emb.', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }],
+      rows, '<td>Total</td><td></td><td></td><td></td><td class="num">' + fmtNum(p.piezasEmb) + '</td><td class="num">' + fmtNum(p.piezasPend) + '</td><td></td><td></td>');
+    if (p.masAntiguo) html += '<p class="hint">Documento más antiguo: ' + esc(p.masAntiguo.doc) + ' de ' + esc(p.masAntiguo.origenDesc || p.masAntiguo.origen) + ' (' + p.masAntiguo.dias + ' días).</p>';
+  } else {
+    var q = computeTransfSAP(c.filas);
+    html += '<div class="totales">' +
+      '<div class="total-card destacado"><div class="etiqueta">Importe pendiente</div><div class="valor">' + fmtDinero(q.importeTotal) + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Documentos</div><div class="valor">' + q.documentos + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Sucursales origen</div><div class="valor">' + q.porOrigen.length + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Más antiguo</div><div class="valor">' + (q.masAntiguo ? q.masAntiguo.dias + ' días' : '—') + '</div></div></div>';
+    html += '<div class="grafica"><h3>Distribución por antigüedad</h3>' + donutHTML(q.antiguedad, q.importeTotal, false) + '</div>';
+    html += barrasHTML('Pendiente por sucursal origen', q.porOrigen.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.importe }; }), fmtDinero);
+    var rows2 = c.filas.slice().sort(function (a, b) { return b.dias - a.dias; }).map(function (f) {
+      var clave = 'transf:' + f.doc;
+      return '<tr><td>' + esc(f.doc) + '</td><td>' + fmtFecha(f.fechaCont) + '</td><td>' + esc(f.origen) + ' ' + esc(f.origenDesc) + '</td>' +
+        '<td>' + esc(f.destino) + ' ' + esc(f.destinoDesc) + '</td><td class="num">' + fmtDinero(f.importe) + '</td>' +
+        '<td class="num">' + f.dias + '</td><td>' + esc(f.estatus || '') + '</td><td>' + segControl('transf', clave) + '</td></tr>';
+    }).join('');
+    html += '<h3>Detalle por documento</h3>' + tablaHTML(
+      [{ t: 'Documento' }, { t: 'Fecha contable' }, { t: 'Origen' }, { t: 'Destino' }, { t: 'Importe', num: true }, { t: 'Días', num: true }, { t: 'Estatus' }, { t: 'Seguimiento' }],
+      rows2, '<td>Total</td><td></td><td></td><td></td><td class="num">' + fmtDinero(q.importeTotal) + '</td><td></td><td></td><td></td>');
+  }
+  el.innerHTML = html;
+  resumenes.transf = resumenTransfTexto(c);
+  el.insertAdjacentHTML('beforeend', resumenBoxHTML('transf', resumenes.transf));
+}
+
+function renderBloq() {
+  var c = ultimaCarga('bloq');
+  var el = $('bloq-panel'), info = $('bloq-corte');
+  if (!c) { info.textContent = ''; resumenes.bloq = ''; el.innerHTML = '<p class="vacio">Aún no hay stock bloqueado cargado. Sube el archivo de bloqueados arriba.</p>'; return; }
+  info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · Formato: ' + (c.formato === 'concentrado' ? 'Concentrado' : 'Bloq original');
+  var html = '';
+  if (c.advertencia) html += '<div class="alerta">' + esc(c.advertencia) + '</div>';
+  if (c.formato === 'concentrado') {
+    var p = computeBloqConc(c.filas, c.resumenHoja);
+    html += '<div class="totales">' +
+      '<div class="total-card destacado"><div class="etiqueta">Importe bloqueado</div><div class="valor">' + fmtDinero(p.total) + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Registros</div><div class="valor">' + p.registros + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Unidades bloqueadas</div><div class="valor">' + fmtNum(p.unidades, 3) + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Centros</div><div class="valor">' + p.porCentro.length + '</div></div></div>';
+    html += barrasHTML('Importe por centro', p.porCentro.map(function (x) { return { etiqueta: x.clave, valor: x.valor }; }), fmtDinero);
+    html += barrasHTML('Por Jerarquía 2', p.porJerarquia.map(function (x) { return { etiqueta: x.clave, valor: x.valor }; }), fmtDinero);
+    var rows = p.porCentro.map(function (x) {
+      var clave = 'bloq:centro:' + x.clave;
+      return '<tr><td>' + esc(x.clave) + '</td><td class="num">' + x.registros + '</td><td class="num">' + fmtNum(x.unidades, 3) + '</td><td class="num">' + fmtDinero(x.valor) + '</td><td>' + segControl('bloq', clave) + '</td></tr>';
+    }).join('');
+    html += '<h3>Detalle por centro</h3>' + tablaHTML(
+      [{ t: 'Centro' }, { t: 'Registros', num: true }, { t: 'Unidades', num: true }, { t: 'Importe', num: true }, { t: 'Seguimiento' }],
+      rows, '<td>Total</td><td class="num">' + p.registros + '</td><td class="num">' + fmtNum(p.unidades, 3) + '</td><td class="num">' + fmtDinero(p.total) + '</td><td></td>');
+    var topRows = p.top.map(function (f) {
+      var clave = 'bloq:' + f.centro + ':' + f.material;
+      return '<tr><td>' + esc(f.centro) + '</td><td>' + esc(f.material) + '</td><td>' + esc(f.denom) + '</td><td>' + esc(f.jerarquia) + '</td><td class="num">' + fmtNum(f.bloqueado, 3) + '</td><td class="num">' + fmtDinero(f.valor) + '</td><td>' + segControl('bloq', clave) + '</td></tr>';
+    }).join('');
+    html += '<h3>Artículos más críticos</h3>' + tablaHTML(
+      [{ t: 'Centro' }, { t: 'Material' }, { t: 'Denominación' }, { t: 'Jerarquía' }, { t: 'Bloqueado', num: true }, { t: 'Valor', num: true }, { t: 'Seguimiento' }], topRows, '');
+  } else {
+    var q = computeBloqOrig(c.filas);
+    html += '<div class="totales">' +
+      '<div class="total-card destacado"><div class="etiqueta">Impacto absoluto</div><div class="valor">' + fmtDinero(q.impacto) + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Importe neto</div><div class="valor">' + fmtDinero(q.neto) + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Registros</div><div class="valor">' + q.registros + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Stock + / −</div><div class="valor" style="font-size:17px">' + fmtNum(q.stockPos, 1) + ' / ' + fmtNum(q.stockNeg, 1) + '</div><div class="sub">' + q.stockPosN + ' positivos · ' + q.stockNegN + ' negativos</div></div></div>';
+    html += barrasHTML('Impacto por sucursal', q.porSucursal.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.impacto }; }), fmtDinero);
+    html += barrasHTML('Por departamento', q.porDepartamento.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: Math.abs(x.importe) }; }), fmtDinero);
+    var rows2 = q.porSucursal.map(function (x) {
+      var clave = 'bloq:centro:' + x.clave;
+      return '<tr><td>' + esc(x.clave) + ' ' + esc(x.nombre) + '</td><td class="num">' + x.registros + '</td><td class="num">' + fmtDinero(x.importe) + '</td><td class="num">' + fmtDinero(x.impacto) + '</td><td>' + segControl('bloq', clave) + '</td></tr>';
+    }).join('');
+    html += '<h3>Detalle por sucursal</h3>' + tablaHTML(
+      [{ t: 'Sucursal' }, { t: 'Registros', num: true }, { t: 'Importe neto', num: true }, { t: 'Impacto', num: true }, { t: 'Seguimiento' }],
+      rows2, '<td>Total</td><td class="num">' + q.registros + '</td><td class="num">' + fmtDinero(q.neto) + '</td><td class="num">' + fmtDinero(q.impacto) + '</td><td></td>');
+    var topRows2 = q.top.map(function (f) {
+      var clave = 'bloq:' + f.centro + ':' + f.material;
+      return '<tr><td>' + esc(f.centro) + '</td><td>' + esc(f.material) + '</td><td>' + esc(f.descripcion) + '</td><td>' + esc(f.departamento) + '</td><td class="num">' + fmtNum(f.stockBloq, 2) + '</td><td class="num">' + fmtDinero(f.importe) + '</td><td>' + segControl('bloq', clave) + '</td></tr>';
+    }).join('');
+    html += '<h3>Artículos más críticos</h3>' + tablaHTML(
+      [{ t: 'Centro' }, { t: 'Material' }, { t: 'Descripción' }, { t: 'Departamento' }, { t: 'Stock bloq.', num: true }, { t: 'Importe', num: true }, { t: 'Seguimiento' }], topRows2, '');
+  }
+  el.innerHTML = html;
+  resumenes.bloq = resumenBloqTexto(c);
+  el.insertAdjacentHTML('beforeend', resumenBoxHTML('bloq', resumenes.bloq));
+}
+
+var rotFiltro = 'todas';
+
+function tablaRotativos(rows) {
+  var html = rows.map(function (x) {
+    var clave = 'rot:' + x.semana + ':' + x.suc;
+    return '<tr><td>' + esc(x.etiqueta) + '</td><td>' + esc(x.suc) + '</td>' +
+      '<td class="num">' + x.articulos + '</td><td class="num">' + x.meta + '</td>' +
+      '<td class="num">' + Math.round(x.cumplimiento) + '%</td>' +
+      '<td class="num">' + x.conteos + '</td>' +
+      '<td class="num">' + fmtNum(x.difu) + '</td><td class="num">' + fmtDinero(x.difp) + '</td>' +
+      '<td class="num">' + x.conDif + '</td>' +
+      '<td class="num">' + (x.articulos ? x.exactitud.toFixed(1) + '%' : '—') + '</td>' +
+      '<td><span class="nivel ' + (x.estatus === 'Cumplido' ? 'controlado' : 'seguimiento') + '">' + x.estatus + '</span></td>' +
+      '<td>' + segControl('rot', clave) + '</td></tr>';
+  }).join('');
+  return tablaHTML(
+    [{ t: 'Semana' }, { t: 'Sucursal' }, { t: 'Artículos', num: true }, { t: 'Meta', num: true }, { t: '% cumpl.', num: true },
+     { t: 'Conteos', num: true }, { t: 'DIFU', num: true }, { t: 'DIFP', num: true }, { t: 'Art. con dif.', num: true },
+     { t: 'Exactitud', num: true }, { t: 'Estatus' }, { t: 'Seguimiento' }],
+    html, '');
+}
+
+function renderRotDetalle(carga, filtro) {
+  var el = $('rot-detalle');
+  if (!el || !carga) return;
+  var filas = carga.filas.slice().sort(function (a, b) {
+    if (a.fecha && b.fecha && a.fecha !== b.fecha) return (a.fecha < b.fecha) ? 1 : -1;
+    return (a.suc < b.suc) ? -1 : 1;
+  });
+  if (filtro && filtro !== 'todas') filas = filas.filter(function (f) { return f.suc === filtro; });
+  var rows = filas.map(function (f) {
+    return '<tr><td>' + esc(f.suc) + '</td><td>' + fmtFecha(f.fecha) + '</td><td>' + esc(f.rol) + '</td>' +
+      '<td>' + esc(f.articulo) + '</td><td>' + esc(f.descripcion) + '</td>' +
+      '<td class="num">' + fmtNum(f.teo) + '</td><td class="num">' + fmtNum(f.fis) + '</td>' +
+      '<td class="num">' + fmtNum(f.difu) + '</td><td class="num">' + fmtDinero(f.difp) + '</td></tr>';
+  }).join('');
+  el.innerHTML = '<h3>Detalle por artículo (' + filas.length + ' renglones)</h3>' + tablaHTML(
+    [{ t: 'Sucursal' }, { t: 'Fecha' }, { t: 'ROL' }, { t: 'Artículo' }, { t: 'Descripción' },
+     { t: 'TEO', num: true }, { t: 'FIS', num: true }, { t: 'DIFU', num: true }, { t: 'DIFP', num: true }],
+    rows, '');
+}
+
+function renderRotativos() {
+  var c = ultimaCarga('rot');
+  var el = $('rot-panel'), info = $('rot-corte');
+  if (!c) { info.textContent = ''; resumenes.rot = ''; el.innerHTML = '<p class="vacio">Aún no hay rotativos cargados. Sube el archivo de rotativos arriba.</p>'; return; }
+  var p = computeRotativos(c.filas);
+  info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · ' + p.totalArticulos + ' artículos en ' + p.totalConteos + ' conteos · Semana de jueves a miércoles';
+  var html = '';
+  if (p.semanas.length) {
+    var ult = p.semanas[0];
+    var ultRows = p.filas.filter(function (x) { return x.semana === ult; });
+    html += '<h3>Última semana: ' + esc(etiquetaSemana(ult)) + '</h3><div class="totales">';
+    ultRows.forEach(function (x) {
+      var color = x.cumplimiento >= 100 ? '#12a150' : x.cumplimiento >= 50 ? '#f79009' : '#d92d20';
+      html += '<div class="total-card' + (x.cumplimiento >= 100 ? ' destacado' : '') + '">' +
+        '<div class="etiqueta">Sucursal ' + esc(x.suc) + '</div>' +
+        '<div class="valor">' + Math.round(x.cumplimiento) + '%</div>' +
+        '<div class="barra-fila"><span class="btrack"><span class="bfill" style="display:block;width:' + Math.round(x.cumplimiento) + '%;background:' + color + '"></span></span></div>' +
+        '<div class="sub">' + x.articulos + ' / ' + x.meta + ' artículos · ' + x.conteos + ' conteos</div>' +
+        '<div class="sub">DIFU ' + fmtNum(x.difu) + ' · DIFP ' + fmtDinero(x.difp) + '</div>' +
+        '<div class="sub"><span class="nivel ' + (x.estatus === 'Cumplido' ? 'controlado' : 'seguimiento') + '">' + x.estatus + '</span></div></div>';
+    });
+    html += '</div>';
+  }
+  html += '<h3>Productividad semanal por sucursal</h3>' + tablaRotativos(p.filas);
+  var cortes = cortesDe('rot');
+  if (cortes.length > 1) {
+    var todas = [];
+    cortes.forEach(function (cc) { todas = todas.concat(cc.filas); });
+    var acum = computeRotativos(todas);
+    html += '<h3>Acumulado de todos los cortes</h3><p class="hint">Suma los renglones de todos los cortes guardados. Si subiste el mismo archivo dos veces, se duplica: borra el corte repetido en Cargas.</p>' + tablaRotativos(acum.filas);
+  }
+  var opts = ['<option value="todas">Todas las sucursales</option>'].concat(ROT_SUC.map(function (s) {
+    return '<option value="' + s + '"' + (rotFiltro === s ? ' selected' : '') + '>Sucursal ' + s + '</option>';
+  })).join('');
+  html += '<h3>Detalle por artículo</h3><label class="hint">Filtrar por sucursal: <select id="rot-filtro">' + opts + '</select></label><div id="rot-detalle"></div>';
+  el.innerHTML = html;
+  var sel = $('rot-filtro');
+  if (sel) sel.addEventListener('change', function () { rotFiltro = sel.value; renderRotDetalle(c, rotFiltro); });
+  renderRotDetalle(c, rotFiltro);
+  resumenes.rot = resumenRotTexto(c);
+  el.insertAdjacentHTML('beforeend', resumenBoxHTML('rot', resumenes.rot));
+}
+
+function renderCargas() {
+  var el = $('cargas-lista');
+  if (!state.cargas.length) { el.innerHTML = '<p class="vacio">No hay cargas todavía.</p>'; return; }
+  var cs = state.cargas.slice().sort(function (a, b) { return (a.fechaCorte < b.fechaCorte) ? 1 : -1; });
+  el.innerHTML = cs.map(function (c) {
+    return '<div class="carga"><h3>' + nombreTipo(c.tipo) + ' — corte ' + fmtFecha(c.fechaCorte) + '</h3>' +
+      '<p>Archivo: ' + esc(c.nombre) + '</p>' +
+      '<p>Formato: ' + esc(c.formato) + ' · ' + c.filas.length + ' registros · Cargado: ' + esc(new Date(c.fechaCarga).toLocaleString('es-MX')) + '</p>' +
+      '<div class="acciones"><button class="btn btn-danger" data-borrar="' + c.id + '" type="button">Borrar corte</button></div></div>';
+  }).join('');
+}
+
+function renderTodo() { renderMerma(); renderTransf(); renderBloq(); renderRotativos(); renderCargas(); renderResumenCompleto(); }
+
+/* ---- subida e importación ---- */
+function leerArchivo(file) {
+  return new Promise(function (resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function (e) {
+      try {
+        var wb = XLSX.read(e.target.result, { type: 'array', cellDates: true });
+        var det = detectarTipo(wb);
+        if (!det.tipo) { resolve({ nombre: file.name, error: det.error }); return; }
+        var filas = [], fechas = [], advertencia = null, resumenHoja = null;
+        if (det.tipo === 'merma') {
+          filas = parseMerma(filasDeHoja(wb, det.hoja));
+          fechas = filas.map(function (f) { return f.fechaEntrada; });
+        } else if (det.tipo === 'transf' && det.formato === 'destino') {
+          filas = parseTransfDestino(filasDeHoja(wb, det.hoja));
+          fechas = filas.map(function (f) { return f.fechaEmb; });
+        } else if (det.tipo === 'transf' && det.formato === 'detallado') {
+          filas = parseTransfDetallado(filasDeHoja(wb, det.hoja));
+          fechas = filas.map(function (f) { return f.fechaEmb; });
+        } else if (det.tipo === 'rot') {
+          filas = parseRotativos(filasDeHoja(wb, det.hoja));
+          fechas = filas.map(function (f) { return f.fecha; });
+        } else if (det.tipo === 'transf') {
+          filas = parseTransfSAP(wb);
+          fechas = filas.map(function (f) { return f.fechaCont; });
+        } else if (det.tipo === 'bloq' && det.formato === 'concentrado') {
+          var pc = parseBloqConcentrado(wb);
+          filas = pc.filas; resumenHoja = pc.resumen;
+          var tot = filas.reduce(function (a, f) { return a + f.valor; }, 0);
+          if (resumenHoja && Math.abs(resumenHoja.total - tot) > 0.01) {
+            advertencia = 'La hoja RESUMEN suma ' + fmtDinero(resumenHoja.total) + ' y el concentrado suma ' + fmtDinero(tot) + '. Revisa el archivo.';
+          }
+        } else {
+          filas = parseBloqOriginal(filasDeHoja(wb, det.hoja));
+        }
+        if (!filas.length) { resolve({ nombre: file.name, error: 'El archivo se reconoció como ' + nombreTipo(det.tipo) + ' (' + det.formato + '), pero no trae renglones con datos.' }); return; }
+        resolve({
+          id: 'p' + Date.now() + Math.floor(Math.random() * 1000),
+          nombre: file.name, tipo: det.tipo, formato: det.formato,
+          fechaCorte: sugerirCorte(file.name, fechas),
+          filas: filas, resumenHoja: resumenHoja, advertencia: advertencia
+        });
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = function () { reject(new Error('No se pudo leer el archivo.')); };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function resumenPendiente(p) {
+  if (p.tipo === 'rot') {
+    var roles = {};
+    p.filas.forEach(function (f) { if (f.rol) roles[f.rol] = 1; });
+    return p.filas.length + ' artículos · ' + Object.keys(roles).length + ' conteos · sucursales 127, 331, 333, 334 y 1060';
+  }
+  if (p.tipo === 'merma') return 'Total: ' + fmtDinero(p.filas.reduce(function (a, f) { return a + f.costoTotal; }, 0)) + ' · ' + p.filas.length + ' registros';
+  if (p.tipo === 'transf' && p.formato === 'destino') {
+    var pe = p.filas.reduce(function (a, f) { return a + f.piezasEmb; }, 0);
+    var pp = p.filas.reduce(function (a, f) { return a + f.difFinal; }, 0);
+    return p.filas.length + ' documentos · ' + fmtNum(pe) + ' piezas embarcadas · ' + fmtNum(pp) + ' pendientes';
+  }
+  if (p.tipo === 'transf' && p.formato === 'detallado') {
+    var im = p.filas.reduce(function (a, f) { return a + f.costo; }, 0);
+    var pd = p.filas.reduce(function (a, f) { return a + f.piezasPend; }, 0);
+    var docs = {};
+    p.filas.forEach(function (f) { docs[f.doc] = 1; });
+    return Object.keys(docs).length + ' documentos · ' + fmtDinero(im) + ' · ' + fmtNum(pd) + ' piezas pendientes · ' + p.filas.length + ' renglones';
+  }
+  if (p.tipo === 'transf') return 'Total: ' + fmtDinero(p.filas.reduce(function (a, f) { return a + f.importe; }, 0)) + ' · ' + p.filas.length + ' documentos';
+  if (p.formato === 'concentrado') return 'Total: ' + fmtDinero(p.filas.reduce(function (a, f) { return a + f.valor; }, 0)) + ' · ' + p.filas.length + ' registros';
+  return 'Impacto: ' + fmtDinero(p.filas.reduce(function (a, f) { return a + Math.abs(f.importe); }, 0)) + ' · ' + p.filas.length + ' registros';
+}
+
+function renderPendientes() {
+  var el = $('pendientes');
+  if (!pendientes.length) { el.innerHTML = ''; return; }
+  el.innerHTML = pendientes.map(function (p) {
+    if (p.error) {
+      return '<div class="pendiente"><h3>' + esc(p.nombre) + '</h3><div class="error">' + esc(p.error).replace(/\n/g, '<br>') + '</div>' +
+        '<div class="acciones"><button class="btn" data-quitar="' + p.id + '" type="button">Quitar</button></div></div>';
+    }
+    return '<div class="pendiente"><h3>' + esc(p.nombre) + '</h3>' +
+      '<div class="tipo">Detectado: ' + nombreTipo(p.tipo) + ' · formato ' + esc(p.formato) + '</div>' +
+      '<div class="totales">' + esc(resumenPendiente(p)) + '</div>' +
+      (p.advertencia ? '<div class="alerta">' + esc(p.advertencia) + '</div>' : '') +
+      '<label>Fecha de corte: <input type="date" data-corte="' + p.id + '" value="' + p.fechaCorte + '"></label>' +
+      '<div class="acciones"><button class="btn btn-primary" data-importar="' + p.id + '" type="button">Importar como corte</button>' +
+      '<button class="btn" data-quitar="' + p.id + '" type="button">Cancelar</button></div></div>';
+  }).join('');
+}
+
+function importarPendiente(id) {
+  var p = pendientes.find(function (x) { return x.id === id; });
+  if (!p || p.error) return;
+  var input = document.querySelector('[data-corte="' + id + '"]');
+  var fechaCorte = (input && input.value) ? input.value : p.fechaCorte;
+  state.cargas.push({
+    id: 'c' + Date.now() + Math.floor(Math.random() * 1000),
+    tipo: p.tipo, formato: p.formato, nombre: p.nombre,
+    fechaCorte: fechaCorte, fechaCarga: new Date().toISOString(),
+    filas: p.filas, resumenHoja: p.resumenHoja || null, advertencia: p.advertencia || null
+  });
+  // Máximo 12 cortes por tipo para no llenar el localStorage
+  ['merma', 'transf', 'bloq', 'rot'].forEach(function (t) {
+    var cs = state.cargas.filter(function (c) { return c.tipo === t; })
+      .sort(function (a, b) { return (a.fechaCorte < b.fechaCorte) ? -1 : 1; });
+    if (cs.length > 12) {
+      var viejos = cs.slice(12).map(function (c) { return c.id; });
+      state.cargas = state.cargas.filter(function (c) { return viejos.indexOf(c.id) < 0; });
+    }
+  });
+  pendientes = pendientes.filter(function (x) { return x.id !== id; });
+  guardarEstado(); renderPendientes(); renderTodo();
+  toast(nombreTipo(p.tipo) + ' importado: corte ' + fmtFecha(fechaCorte) + '.');
+}
+
+async function procesarArchivos(files) {
+  for (var i = 0; i < files.length; i++) {
+    var f = files[i];
+    if (!/\.xlsx?$/i.test(f.name)) { toast('El archivo ' + f.name + ' no es Excel (.xlsx).'); continue; }
+    try {
+      var p = await leerArchivo(f);
+      p.id = p.id || ('p' + Date.now() + i);
+      pendientes.push(p);
+    } catch (e) { pendientes.push({ id: 'p' + Date.now() + i, nombre: f.name, error: 'No se pudo leer el archivo: ' + e.message }); }
+  }
+  renderPendientes();
+}
+
+/* ---- exportación a Excel ---- */
 function exportar(tipo) {
   if (typeof XLSX === 'undefined') { toast('No se pudo cargar la librería de Excel. Revisa tu conexión e inténtalo de nuevo.'); return; }
   var wb = XLSX.utils.book_new();
-  var tipos = tipo ? [tipo] : ['merma', 'transf', 'bloq'];
+  var tipos = tipo ? [tipo] : ['merma', 'transf', 'bloq', 'rot'];
   var resumen = [['PANEL DE SEGUIMIENTO — RESUMEN'], ['Generado', new Date().toLocaleString('es-MX')], [], ['Reporte', 'Corte', 'Total principal', 'Registros']];
   var hubo = false;
   tipos.forEach(function (t) {
@@ -1079,6 +1444,7 @@ function exportar(tipo) {
     if (t === 'transf' && c.formato !== 'destino' && c.formato !== 'detallado') totalTxt = fmtDinero(computeTransfSAP(c.filas).importeTotal);
     if (t === 'bloq' && c.formato === 'concentrado') totalTxt = fmtDinero(computeBloqConc(c.filas, c.resumenHoja).total);
     if (t === 'bloq' && c.formato !== 'concentrado') totalTxt = fmtDinero(computeBloqOrig(c.filas).impacto) + ' impacto';
+    if (t === 'rot') { var rp = computeRotativos(c.filas); totalTxt = fmtNum(rp.totalArticulos) + ' artículos · ' + rp.totalConteos + ' conteos'; }
     resumen.push([etiqueta, c.fechaCorte, totalTxt, c.filas.length]);
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(panelAOA(t, c)), 'Panel ' + etiqueta);
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detalleJSON(t, c)), 'Detallado ' + etiqueta);
@@ -1106,11 +1472,18 @@ function init() {
     btn.addEventListener('click', function () {
       tabActual = btn.getAttribute('data-tab');
       document.querySelectorAll('.tab').forEach(function (b) { b.classList.toggle('active', b === btn); });
-      ['merma', 'transf', 'bloq', 'cargas'].forEach(function (t) { $('tab-' + t).classList.toggle('hidden', t !== tabActual); });
+      ['merma', 'transf', 'bloq', 'rot', 'cargas'].forEach(function (t) { $('tab-' + t).classList.toggle('hidden', t !== tabActual); });
       if (tabActual === 'cargas') renderCargas();
     });
   });
   document.addEventListener('click', function (e) {
+    var cp = e.target.closest('[data-copiar]');
+    if (cp) {
+      var t = cp.getAttribute('data-copiar');
+      var txt = t === 'completo' ? resumenCompletoTexto(resumenes) : (resumenes[t] || '');
+      if (txt) copiarTexto(txt); else toast('No hay datos cargados para copiar.');
+      return;
+    }
     var imp = e.target.closest('[data-importar]');
     if (imp) { importarPendiente(imp.getAttribute('data-importar')); return; }
     var q = e.target.closest('[data-quitar]');
@@ -1135,6 +1508,7 @@ function init() {
   $('exp-merma').addEventListener('click', function () { exportar('merma'); });
   $('exp-transf').addEventListener('click', function () { exportar('transf'); });
   $('exp-bloq').addEventListener('click', function () { exportar('bloq'); });
+  $('exp-rot').addEventListener('click', function () { exportar('rot'); });
   renderTodo();
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(function () {});

@@ -9,18 +9,18 @@
 <link rel="icon" href="./icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="./icon-512.png">
 <link rel="stylesheet" href="./styles.css">
-<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script src="./xlsx.full.min.js"></script>
 </head>
 <body>
 <header class="topbar">
   <h1>Panel de Seguimiento</h1>
-  <p>Merma · Transferencias · Stock Bloqueado — La Paz, BCS</p>
+  <p>Merma · Transferencias · Stock Bloqueado · Rotativos — La Paz, BCS</p>
 </header>
 
 <main>
   <section class="card" id="seccion-subir">
     <h2>Alimentar los paneles</h2>
-    <p class="hint">Sube los archivos Excel que te llegan por correo (merma, transferencias o bloqueados). La app detecta el tipo por sus columnas. Cada archivo crea un nuevo corte con su fecha.</p>
+    <p class="hint">Sube los archivos Excel que te llegan por correo (merma, transferencias, bloqueados o rotativos). La app detecta el tipo por sus columnas. Cada archivo crea un nuevo corte con su fecha.</p>
     <div class="dropzone" id="dropzone" tabindex="0">
       <p class="drop-title">Arrastra aquí tus archivos .xlsx</p>
       <p class="drop-sub">o toca para elegirlos</p>
@@ -34,6 +34,7 @@
     <button class="tab active" data-tab="merma" type="button">Merma</button>
     <button class="tab" data-tab="transf" type="button">Transferencias</button>
     <button class="tab" data-tab="bloq" type="button">Bloqueado</button>
+    <button class="tab" data-tab="rot" type="button">Rotativos</button>
     <button class="tab" data-tab="cargas" type="button">Cargas</button>
   </nav>
 
@@ -55,6 +56,12 @@
     <div id="bloq-panel"></div>
   </section>
 
+  <section class="card hidden" id="tab-rot">
+    <h2>Rotativos — Productividad de conteos</h2>
+    <div class="corte-info" id="rot-corte"></div>
+    <div id="rot-panel"></div>
+  </section>
+
   <section class="card hidden" id="tab-cargas">
     <h2>Historial de cargas</h2>
     <p class="hint">Cada archivo que subes queda guardado como un corte. Si subiste un archivo equivocado, bórralo aquí.</p>
@@ -69,7 +76,10 @@
       <button class="btn" id="exp-merma" type="button">Merma</button>
       <button class="btn" id="exp-transf" type="button">Transferencias</button>
       <button class="btn" id="exp-bloq" type="button">Bloqueado</button>
+      <button class="btn" id="exp-rot" type="button">Rotativos</button>
+      <button class="btn" data-copiar="completo" type="button">Copiar resumen completo</button>
     </div>
+    <div id="resumen-completo-preview"></div>
   </section>
 </main>
 

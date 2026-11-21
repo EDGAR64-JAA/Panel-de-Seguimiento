@@ -1,10 +1,11 @@
 /* Service worker — Panel de Seguimiento (caché para uso sin conexión) */
-var CACHE = 'panel-seguimiento-v1';
+var CACHE = 'panel-seguimiento-v2';
 var ARCHIVOS = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './xlsx.full.min.js',
   './manifest.webmanifest',
   './icon.svg',
   './icon-512.png'
