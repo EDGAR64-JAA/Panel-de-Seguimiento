@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0b2a4a">
+<title>Panel de Seguimiento — La Paz, BCS</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icon-512.png">
+<link rel="stylesheet" href="./styles.css">
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <h1>Panel de Seguimiento</h1>
+  <p>Merma · Transferencias · Stock Bloqueado — La Paz, BCS</p>
+</header>
+
+<main>
+  <section class="card" id="seccion-subir">
+    <h2>Alimentar los paneles</h2>
+    <p class="hint">Sube los archivos Excel que te llegan por correo (merma, transferencias o bloqueados). La app detecta el tipo por sus columnas. Cada archivo crea un nuevo corte con su fecha.</p>
+    <div class="dropzone" id="dropzone" tabindex="0">
+      <p class="drop-title">Arrastra aquí tus archivos .xlsx</p>
+      <p class="drop-sub">o toca para elegirlos</p>
+      <input type="file" id="file-input" accept=".xlsx,.xls" multiple hidden>
+      <button class="btn btn-primary" id="btn-elegir" type="button">Elegir archivos</button>
+    </div>
+    <div id="pendientes"></div>
+  </section>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="merma" type="button">Merma</button>
+    <button class="tab" data-tab="transf" type="button">Transferencias</button>
+    <button class="tab" data-tab="bloq" type="button">Bloqueado</button>
+    <button class="tab" data-tab="cargas" type="button">Cargas</button>
+  </nav>
+
+  <section class="card" id="tab-merma">
+    <h2>Merma Pendiente de Liberar</h2>
+    <div class="corte-info" id="merma-corte"></div>
+    <div id="merma-panel"></div>
+  </section>
+
+  <section class="card hidden" id="tab-transf">
+    <h2>Transferencias Pendientes</h2>
+    <div class="corte-info" id="transf-corte"></div>
+    <div id="transf-panel"></div>
+  </section>
+
+  <section class="card hidden" id="tab-bloq">
+    <h2>Stock Bloqueado</h2>
+    <div class="corte-info" id="bloq-corte"></div>
+    <div id="bloq-panel"></div>
+  </section>
+
+  <section class="card hidden" id="tab-cargas">
+    <h2>Historial de cargas</h2>
+    <p class="hint">Cada archivo que subes queda guardado como un corte. Si subiste un archivo equivocado, bórralo aquí.</p>
+    <div id="cargas-lista"></div>
+  </section>
+
+  <section class="card" id="seccion-exportar">
+    <h2>Exportar a Excel</h2>
+    <p class="hint">Descarga los reportes con los paneles y el detallado del corte más reciente de cada tipo.</p>
+    <div class="export-btns">
+      <button class="btn btn-primary" id="exp-todo" type="button">Reporte completo</button>
+      <button class="btn" id="exp-merma" type="button">Merma</button>
+      <button class="btn" id="exp-transf" type="button">Transferencias</button>
+      <button class="btn" id="exp-bloq" type="button">Bloqueado</button>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <p>Los datos viven solo en este dispositivo (localStorage). Sin conexión no se pueden leer archivos nuevos, pero los paneles ya cargados sí se ven.</p>
+</footer>
+
+<div id="toast" class="toast hidden"></div>
+<script src="./app.js"></script>
+</body>
+</html>
