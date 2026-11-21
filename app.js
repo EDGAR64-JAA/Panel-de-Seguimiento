@@ -456,6 +456,53 @@ function computeTransfSAP(filas) {
   return { documentos: filas.length, importeTotal: total, porOrigen: lista, antiguedad: ant, masAntiguo: masAntiguo };
 }
 
+/* ---- fuera de política (transferencias) ---- */
+/* Política: una transferencia debe liberarse en máximo 3 días.
+   Documento fuera de política: Dias Transcurridos > 3. */
+var POLITICA_DIAS_MAX = 3;
+
+/* Normaliza el fuera de política para los 3 formatos de transferencias:
+   { documentos, piezas, importe, tienePiezas, tieneImporte,
+     porDestino: [{clave, nombre, docs, piezas, importe}],
+     detalle: [{doc, fechaEmb, origen, origenDesc, destino, destinoDesc, dias, piezas, importe}] }
+   El detalle va ordenado del más antiguo al más reciente (más días primero).
+   SAP no trae piezas (tienePiezas false); DESTINO trae Costo Total en 0, por
+   lo que tieneImporte es false cuando el importe total es 0. */
+function fueraPoliticaTransf(carga) {
+  var docs = [], tienePiezas = true;
+  if (carga.formato === 'detallado') {
+    var d = computeTransfDetallado(carga.filas);
+    docs = d.porDoc.filter(function (x) { return x.dias > POLITICA_DIAS_MAX; }).map(function (x) {
+      return { doc: x.doc, fechaEmb: x.fechaEmb, origen: x.origen, origenDesc: x.origenDesc,
+        destino: x.destino, destinoDesc: x.destinoDesc, dias: x.dias, piezas: x.piezasPend, importe: x.importe };
+    });
+  } else if (carga.formato === 'destino') {
+    docs = carga.filas.filter(function (f) { return f.dias > POLITICA_DIAS_MAX; }).map(function (f) {
+      return { doc: f.doc, fechaEmb: f.fechaEmb, origen: f.origen, origenDesc: f.origenDesc,
+        destino: f.destino, destinoDesc: f.destinoDesc, dias: f.dias, piezas: f.difFinal, importe: f.costoTotal };
+    });
+    docs.sort(function (a, b) { return b.dias - a.dias || ((a.fechaEmb || '') < (b.fechaEmb || '') ? -1 : 1); });
+  } else {
+    tienePiezas = false;
+    docs = carga.filas.filter(function (f) { return f.dias > POLITICA_DIAS_MAX; }).map(function (f) {
+      return { doc: f.doc, fechaEmb: f.fechaCont, origen: f.origen, origenDesc: f.origenDesc,
+        destino: f.destino, destinoDesc: f.destinoDesc, dias: f.dias, piezas: 0, importe: f.importe };
+    });
+    docs.sort(function (a, b) { return b.dias - a.dias || ((a.fechaEmb || '') < (b.fechaEmb || '') ? -1 : 1); });
+  }
+  var porDestino = {};
+  docs.forEach(function (x) {
+    var t = porDestino[x.destino] || { clave: x.destino, nombre: x.destinoDesc, docs: 0, piezas: 0, importe: 0 };
+    t.docs++; t.piezas += x.piezas; t.importe += x.importe; porDestino[x.destino] = t;
+  });
+  function aLista(m) { return Object.keys(m).map(function (k) { return m[k]; }).sort(function (a, b) { return (b.importe - a.importe) || (b.piezas - a.piezas); }); }
+  var piezas = 0, importe = 0;
+  docs.forEach(function (x) { piezas += x.piezas; importe += x.importe; });
+  return { documentos: docs.length, piezas: piezas, importe: importe,
+    tienePiezas: tienePiezas, tieneImporte: importe > 0,
+    porDestino: aLista(porDestino), detalle: docs };
+}
+
 function computeBloqConc(filas, resumenHoja) {
   var total = 0, unidades = 0, porCentro = {}, porJer = {};
   filas.forEach(function (f) {
@@ -584,6 +631,39 @@ function computeRotativos(filas) {
     totalConteos: Object.keys(rolesTotales).length };
 }
 
+/* Sección fuera de política para la hoja Panel de la exportación de transferencias. */
+function fueraPoliticaAOA(L, fp) {
+  L.push(['FUERA DE POLÍTICA (más de 3 días)']);
+  L.push(['Documentos fuera de política', fp.documentos,
+    'Piezas pendientes', fp.tienePiezas ? fp.piezas : '',
+    'Importe fuera de política', fp.tieneImporte ? fp.importe : '']);
+  L.push([]);
+  L.push(['POR SUCURSAL DESTINO (fuera de política)']);
+  var hd = ['Destino', 'Nombre', 'Documentos'];
+  if (fp.tienePiezas) hd.push('Piezas pendientes');
+  if (fp.tieneImporte) hd.push('Importe');
+  L.push(hd);
+  fp.porDestino.forEach(function (x) {
+    var r = [x.clave, x.nombre, x.docs];
+    if (fp.tienePiezas) r.push(x.piezas);
+    if (fp.tieneImporte) r.push(x.importe);
+    L.push(r);
+  });
+  L.push([]);
+  L.push(['DETALLE DE DOCUMENTOS FUERA DE POLÍTICA (del más antiguo al más reciente)']);
+  var hd2 = ['Documento', 'Fecha embarque', 'Origen', 'Destino', 'Días'];
+  if (fp.tienePiezas) hd2.push('Piezas pendientes');
+  if (fp.tieneImporte) hd2.push('Importe');
+  L.push(hd2);
+  fp.detalle.forEach(function (x) {
+    var r = [x.doc, x.fechaEmb, x.origen + ' ' + x.origenDesc, x.destino + ' ' + x.destinoDesc, x.dias];
+    if (fp.tienePiezas) r.push(x.piezas);
+    if (fp.tieneImporte) r.push(x.importe);
+    L.push(r);
+  });
+  L.push([]);
+}
+
 function panelAOA(tipo, carga) {
   var L = [];
   if (tipo === 'rot') {
@@ -618,6 +698,7 @@ function panelAOA(tipo, carga) {
       L.push(['Corte', carga.fechaCorte, 'Archivo', carga.nombre]);
       L.push(['Importe total', dd.importeTotal, 'Documentos', dd.documentos, 'Piezas embarcadas', dd.piezasEmb, 'Piezas pendientes', dd.piezasPend]);
       L.push([]);
+      fueraPoliticaAOA(L, fueraPoliticaTransf(carga));
       L.push(['ANTIGÜEDAD']);
       L.push(['Rango (días)', 'Documentos', 'Importe', 'Piezas']);
       RANGOS.forEach(function (r) { L.push([r, dd.antiguedad[r].n, dd.antiguedad[r].monto, dd.antiguedad[r].piezas]); });
@@ -639,6 +720,7 @@ function panelAOA(tipo, carga) {
       L.push(['Corte', carga.fechaCorte, 'Archivo', carga.nombre]);
       L.push(['Documentos', q.documentos, 'Piezas embarcadas', q.piezasEmb, 'Piezas pendientes', q.piezasPend, 'Importe', q.costoTotal]);
       L.push([]);
+      fueraPoliticaAOA(L, fueraPoliticaTransf(carga));
       L.push(['ANTIGÜEDAD (piezas pendientes)']);
       L.push(['Rango (días)', 'Documentos', 'Piezas']);
       RANGOS.forEach(function (r) { L.push([r, q.antiguedad[r].n, q.antiguedad[r].piezas]); });
@@ -656,6 +738,7 @@ function panelAOA(tipo, carga) {
       L.push(['Corte', carga.fechaCorte, 'Archivo', carga.nombre]);
       L.push(['Importe total', s.importeTotal, 'Documentos', s.documentos]);
       L.push([]);
+      fueraPoliticaAOA(L, fueraPoliticaTransf(carga));
       L.push(['ANTIGÜEDAD']);
       L.push(['Rango (días)', 'Documentos', 'Importe']);
       RANGOS.forEach(function (r) { L.push([r, s.antiguedad[r].n, s.antiguedad[r].monto]); });
@@ -792,13 +875,31 @@ function resumenBloqTexto(carga) {
   }
   return L.join('\n');
 }
+/* Línea de fuera de política para el resumen de correo de transferencias. */
+function lineaFueraPolitica(fp) {
+  var t = 'FUERA DE POLÍTICA (>3 días): ' + fp.documentos + (fp.documentos === 1 ? ' documento' : ' documentos');
+  if (fp.tienePiezas) t += ' · ' + fmtNum(fp.piezas) + ' piezas';
+  if (fp.tieneImporte) t += ' · ' + fmtDinero(fp.importe);
+  if (fp.porDestino.length) {
+    t += '\nPor destino fuera de política: ' + fp.porDestino.map(function (x) {
+      var s = x.clave + ' ';
+      if (fp.tieneImporte) s += fmtDinero(x.importe);
+      if (fp.tienePiezas) s += (fp.tieneImporte ? ' ' : '') + fmtNum(x.piezas) + ' piezas';
+      s += ' (' + x.docs + (x.docs === 1 ? ' doc' : ' docs') + ')';
+      return s;
+    }).join(' · ');
+  }
+  return t;
+}
 function resumenTransfTexto(carga) {
   var L = [];
+  var fp = fueraPoliticaTransf(carga);
   L.push('Transferencias Pendientes');
   if (carga.formato === 'detallado') {
     var d = computeTransfDetallado(carga.filas);
     L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · ' + d.documentos + ' documentos');
     L.push('IMPORTE PENDIENTE: ' + fmtDinero(d.importeTotal) + ' · PIEZAS PENDIENTES: ' + fmtNum(d.piezasPend) + ' · RENGLONES: ' + d.registros);
+    L.push(lineaFueraPolitica(fp));
     if (d.masAntiguo) L.push('Documento más antiguo: ' + (d.masAntiguo.origenDesc || d.masAntiguo.origen) + ' ' + fmtFecha(d.masAntiguo.fechaEmb) + ', ' + d.masAntiguo.dias + ' días, ' + fmtDinero(d.masAntiguo.importe) + ', ' + fmtNum(d.masAntiguo.piezasPend) + ' piezas');
     L.push('Por origen: ' + d.porOrigen.map(function (x) { return x.clave + ' ' + fmtDinero(x.importe); }).join(' · '));
     L.push('Por destino: ' + d.porDestino.map(function (x) { return x.clave + ' ' + fmtDinero(x.importe); }).join(' · '));
@@ -806,6 +907,7 @@ function resumenTransfTexto(carga) {
     var p = computeTransfDestino(carga.filas);
     L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · ' + p.documentos + ' documentos');
     L.push('PIEZAS EMBARCADAS: ' + fmtNum(p.piezasEmb) + ' · PIEZAS PENDIENTES: ' + fmtNum(p.piezasPend) + (p.costoTotal ? ' · IMPORTE: ' + fmtDinero(p.costoTotal) : ''));
+    L.push(lineaFueraPolitica(fp));
     if (p.masAntiguo) L.push('Documento más antiguo: ' + (p.masAntiguo.origenDesc || p.masAntiguo.origen) + ' ' + fmtFecha(p.masAntiguo.fechaEmb) + ', ' + p.masAntiguo.dias + ' días, ' + fmtNum(p.masAntiguo.difFinal) + ' piezas');
     L.push('Por origen: ' + p.porOrigen.map(function (x) { return x.clave + ' ' + fmtNum(x.piezas) + ' piezas'; }).join(' · '));
     L.push('Por destino: ' + p.porDestino.map(function (x) { return x.clave + ' ' + fmtNum(x.piezas) + ' piezas'; }).join(' · '));
@@ -813,6 +915,7 @@ function resumenTransfTexto(carga) {
     var q = computeTransfSAP(carga.filas);
     L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · ' + q.documentos + ' documentos');
     L.push('IMPORTE PENDIENTE: ' + fmtDinero(q.importeTotal) + ' · DOCUMENTOS: ' + q.documentos);
+    L.push(lineaFueraPolitica(fp));
     if (q.masAntiguo) L.push('Documento más antiguo: ' + (q.masAntiguo.origenDesc || q.masAntiguo.origen) + ' ' + fmtFecha(q.masAntiguo.fechaCont) + ', ' + q.masAntiguo.dias + ' días, ' + fmtDinero(q.masAntiguo.importe));
     L.push('Por origen: ' + q.porOrigen.map(function (x) { return x.clave + ' ' + fmtDinero(x.importe); }).join(' · '));
   }
@@ -858,7 +961,9 @@ if (typeof module !== 'undefined' && module.exports) {
     panelAOA: panelAOA, detalleJSON: detalleJSON,
     resumenMermaTexto: resumenMermaTexto, resumenBloqTexto: resumenBloqTexto,
     resumenTransfTexto: resumenTransfTexto, resumenRotTexto: resumenRotTexto,
-    resumenCompletoTexto: resumenCompletoTexto, fmtDineroSigno: fmtDineroSigno, fmtDifp: fmtDifp
+    resumenCompletoTexto: resumenCompletoTexto, fmtDineroSigno: fmtDineroSigno, fmtDifp: fmtDifp,
+    fueraPoliticaTransf: fueraPoliticaTransf, lineaFueraPolitica: lineaFueraPolitica,
+    POLITICA_DIAS_MAX: POLITICA_DIAS_MAX
   };
 }
 
@@ -868,6 +973,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 var state = { cargas: [], seguimiento: {} };
 var pendientes = [];
 var tabActual = 'merma';
+var soloFPTransf = false; /* filtro del detalle por artículo de transferencias: solo fuera de política */
 var resumenes = {}; /* textos listos para copiar, por reporte: {merma, transf, bloq, rot} */
 
 function cargarEstado() {
@@ -1057,12 +1163,59 @@ function renderMerma() {
   el.insertAdjacentHTML('beforeend', resumenBoxHTML('merma', resumenes.merma));
 }
 
+/* Sección "Fuera de política (más de 3 días)" al inicio del panel de
+   Transferencias: totales, desglose por sucursal destino y detalle de
+   documentos, del más antiguo al más reciente. */
+function fueraPoliticaHTML(c) {
+  var fp = fueraPoliticaTransf(c);
+  var totalDocs = c.formato === 'detallado' ? computeTransfDetallado(c.filas).documentos : c.filas.length;
+  var html = '<div class="fp-box"><h3 class="fp-titulo">⚠ Fuera de política (más de 3 días)</h3>';
+  html += '<div class="totales">' +
+    '<div class="total-card fp-destacado"><div class="etiqueta">Documentos fuera de política</div><div class="valor">' + fp.documentos + '</div><div class="sub">de ' + totalDocs + ' documentos</div></div>' +
+    '<div class="total-card"><div class="etiqueta">Piezas pendientes</div><div class="valor">' + (fp.tienePiezas ? fmtNum(fp.piezas) : '—') + '</div></div>' +
+    '<div class="total-card"><div class="etiqueta">Importe fuera de política</div><div class="valor">' + (fp.tieneImporte ? fmtDinero(fp.importe) : '—') + '</div>' + ((c.formato === 'destino' && !fp.tieneImporte) ? '<div class="sub">El archivo trae Costo Total en 0</div>' : '') + '</div></div>';
+  if (!fp.documentos) {
+    html += '<p class="hint">Ningún documento fuera de política. Todos están dentro de los 3 días.</p></div>';
+    return html;
+  }
+  var bdHeaders = [{ t: 'Destino' }, { t: 'Documentos', num: true }];
+  if (fp.tienePiezas) bdHeaders.push({ t: 'Piezas pend.', num: true });
+  if (fp.tieneImporte) bdHeaders.push({ t: 'Importe', num: true });
+  var bdRows = fp.porDestino.map(function (x) {
+    return '<tr><td>' + esc(x.clave) + ' ' + esc(x.nombre) + '</td><td class="num">' + x.docs + '</td>' +
+      (fp.tienePiezas ? '<td class="num">' + fmtNum(x.piezas) + '</td>' : '') +
+      (fp.tieneImporte ? '<td class="num">' + fmtDinero(x.importe) + '</td>' : '') + '</tr>';
+  }).join('');
+  var bdTotal = '<td>Total</td><td class="num">' + fp.documentos + '</td>' +
+    (fp.tienePiezas ? '<td class="num">' + fmtNum(fp.piezas) + '</td>' : '') +
+    (fp.tieneImporte ? '<td class="num">' + fmtDinero(fp.importe) + '</td>' : '');
+  html += '<h3>Por sucursal destino</h3>' + tablaHTML(bdHeaders, bdRows, bdTotal);
+  var detHeaders = [{ t: 'Documento' }, { t: 'Fecha embarque' }, { t: 'Origen' }, { t: 'Destino' }, { t: 'Días', num: true }];
+  if (fp.tienePiezas) detHeaders.push({ t: 'Piezas pend.', num: true });
+  if (fp.tieneImporte) detHeaders.push({ t: 'Importe', num: true });
+  detHeaders.push({ t: 'Seguimiento' });
+  var detRows = fp.detalle.map(function (x) {
+    var clave = 'transf:' + x.doc;
+    return '<tr><td>' + esc(x.doc) + '</td><td>' + fmtFecha(x.fechaEmb) + '</td><td>' + esc(x.origen) + ' ' + esc(x.origenDesc) + '</td>' +
+      '<td>' + esc(x.destino) + ' ' + esc(x.destinoDesc) + '</td><td class="num">' + x.dias + '</td>' +
+      (fp.tienePiezas ? '<td class="num">' + fmtNum(x.piezas) + '</td>' : '') +
+      (fp.tieneImporte ? '<td class="num">' + fmtDinero(x.importe) + '</td>' : '') +
+      '<td>' + segControl('transf', clave) + '</td></tr>';
+  }).join('');
+  var detTotal = '<td>Total</td><td></td><td></td><td></td><td></td>' +
+    (fp.tienePiezas ? '<td class="num">' + fmtNum(fp.piezas) + '</td>' : '') +
+    (fp.tieneImporte ? '<td class="num">' + fmtDinero(fp.importe) + '</td>' : '') + '<td></td>';
+  html += '<h3>Detalle de documentos fuera de política</h3>' + tablaHTML(detHeaders, detRows, detTotal);
+  html += '</div>';
+  return html;
+}
+
 function renderTransf() {
   var c = ultimaCarga('transf');
   var el = $('transf-panel'), info = $('transf-corte');
   if (!c) { info.textContent = ''; resumenes.transf = ''; el.innerHTML = '<p class="vacio">Aún no hay transferencias cargadas. Sube el archivo de transferencias arriba.</p>'; return; }
   info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · Formato: ' + (c.formato === 'destino' ? 'Destino' : c.formato === 'detallado' ? 'Detallado' : 'SAP');
-  var html = '';
+  var html = fueraPoliticaHTML(c);
   if (c.formato === 'detallado') {
     var d = computeTransfDetallado(c.filas);
     html += '<div class="totales">' +
@@ -1088,11 +1241,14 @@ function renderTransf() {
     html += '<h3>Detalle por documento</h3>' + tablaHTML(
       [{ t: 'Documento' }, { t: 'Fecha embarque' }, { t: 'Origen' }, { t: 'Destino' }, { t: 'Artículos', num: true }, { t: 'Importe', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }],
       docRows, '<td>Total</td><td></td><td></td><td></td><td class="num">' + d.registros + '</td><td class="num">' + fmtDinero(d.importeTotal) + '</td><td class="num">' + fmtNum(d.piezasPend) + '</td><td></td><td></td>');
-    var artRows = c.filas.slice().sort(function (a, b) { return b.costo - a.costo; }).map(function (f) {
+    var artFilas = c.filas.slice().sort(function (a, b) { return b.costo - a.costo; });
+    if (soloFPTransf) artFilas = artFilas.filter(function (f) { return f.dias > POLITICA_DIAS_MAX; });
+    var artRows = artFilas.map(function (f) {
       var clave = 'transf:art:' + f.doc + ':' + f.articulo;
       return '<tr><td>' + esc(f.articulo) + '</td><td>' + esc(f.texto) + '</td><td>' + esc(f.doc) + '</td><td>' + esc(f.origen) + ' → ' + esc(f.destino) + '</td><td class="num">' + fmtDinero(f.costo) + '</td><td class="num">' + fmtNum(f.piezasEmb) + '</td><td class="num">' + fmtNum(f.piezasPend) + '</td><td class="num">' + f.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
     }).join('');
-    html += '<h3>Detalle por artículo</h3>' + tablaHTML(
+    html += '<h3>Detalle por artículo' + (soloFPTransf ? ' — solo fuera de política (' + artFilas.length + ' de ' + c.filas.length + ' renglones)' : '') + '</h3>' +
+      '<div class="filtro-fp"><label><input type="checkbox" data-filtro-fp="transf"' + (soloFPTransf ? ' checked' : '') + '> Solo fuera de política (más de 3 días)</label></div>' + tablaHTML(
       [{ t: 'Artículo' }, { t: 'Texto' }, { t: 'Documento' }, { t: 'Origen → Destino' }, { t: 'Costo', num: true }, { t: 'Piezas emb.', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }],
       artRows, '');
     if (d.masAntiguo) html += '<p class="hint">Documento más antiguo: ' + esc(d.masAntiguo.doc) + ' de ' + esc(d.masAntiguo.origenDesc || d.masAntiguo.origen) + ' a ' + esc(d.masAntiguo.destinoDesc || d.masAntiguo.destino) + ' (' + d.masAntiguo.dias + ' días, ' + fmtDinero(d.masAntiguo.importe) + ', ' + fmtNum(d.masAntiguo.piezasPend) + ' piezas).</p>';
@@ -1497,6 +1653,8 @@ function init() {
     }
   });
   document.addEventListener('change', function (e) {
+    var fpf = e.target.closest('[data-filtro-fp]');
+    if (fpf) { soloFPTransf = fpf.checked; renderTransf(); return; }
     var s = e.target.closest('[data-seg]');
     if (!s) return;
     var clave = s.getAttribute('data-seg');
