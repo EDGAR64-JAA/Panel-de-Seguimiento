@@ -94,6 +94,7 @@ function tiene(cols, nombre) {
 var COLUMNAS_ESPERADAS =
   'MERMA: Centro, Fecha de entrada, Documento material, Material, Texto breve material, Ctd.en UM entrada, Costo Unitario, Costo Total.\n' +
   'TRANSFERENCIAS (DESTINO): Doc.Interno, Fecha Embarque, Tda.Origen, Descripción, Destino, Descripción, Piezas Embarcadas, Piezas Recibidas, Dif. Final, Costo Total, Dias Transcurridos.\n' +
+  'TRANSFERENCIAS (DETALLADO): Doc.Interno, Fecha Embarque, Tda.Origen, Descripción, DOC.CL.MOVTO.303, Fecha Doc.303, Articulo, Destino, Descripción, Texto, Costo, Costo, Fecha Doc.305, Piezas Embarcadas, Piezas Recibidas, Dif.de Piezas, DOC.CL.MOVTO.304, Dif. Final, Dias Transcurridos. En renglones viejos (fecha como texto DD.MM.AAAA) las piezas embarcadas vienen en la columna Fecha Doc.305 y las piezas pendientes en DOC.CL.MOVTO.304; el monto siempre es el primer Costo.\n' +
   'TRANSFERENCIAS (SAP): hoja REPORTE con ZONA, SUCURSAL ORIGEN, DOCUMENTO CONTABLE, FECHA CONTABLE, DIAS TRANSCURRIDOS, IMPORTE, SUCURSAL DESTINO, ESTATUS.\n' +
   'BLOQUEADO (CONCENTRADO): hoja CONCENTRADO con Centro, Material, EAN/UPC, Denomin., Unidad, Jerarquía 2, Almacén, Bloqueado, V. Stock bloq. (y hoja RESUMEN con Centro, Importe bloqueado).\n' +
   'BLOQUEADO (original): Hoja1 con ZONA, Material, Centro, Sucursal, Almacen, Libre Util, Stock Bloq, Cto, Importe, FORMATO, Descripción, Departamento, Clase.';
@@ -131,6 +132,12 @@ function detectarTipo(wb) {
       return { tipo: 'transf', formato: 'destino', hoja: hojas[i] };
     }
     if (tiene(cols, 'DOCUMENTO CONTABLE')) return { tipo: 'transf', formato: 'sap', hoja: hojas[i] };
+    // Transferencias DETALLADO: detalle por artículo en una sola hoja (el archivo
+    // TRANSFERENCIAS_PENDIENTES_DESTINO nuevo). Tiene Articulo + Dias Transcurridos
+    // y NO trae hoja REPORTE (esa ya se descartó arriba). Va antes del SAP genérico.
+    if (tiene(cols, 'Articulo') && tiene(cols, 'Doc.Interno') && tiene(cols, 'Dias Transcurridos')) {
+      return { tipo: 'transf', formato: 'detallado', hoja: hojas[i] };
+    }
     if (tiene(cols, 'Articulo') && tiene(cols, 'Doc.Interno')) return { tipo: 'transf', formato: 'sap', hoja: hojas[i] };
   }
   return { tipo: null, formato: null, error: 'No reconocí el archivo. Columnas esperadas por formato:\n' + COLUMNAS_ESPERADAS };
@@ -222,6 +229,89 @@ function parseTransfSAP(wb) {
     Object.keys(porDoc).forEach(function (k) { filas.push(porDoc[k]); });
   }
   return filas;
+}
+
+/* Devuelve el número si el valor es numérico (número o texto puramente numérico);
+   null en cualquier otro caso (vacío, texto, fecha). Sirve para distinguir las
+   columnas desplazadas del formato detallado. */
+function valorNumerico(v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  var s = String(v).trim();
+  if (/^-?\d+(\.\d+)?$/.test(s)) return parseFloat(s);
+  return null;
+}
+
+/* Transferencias DETALLADO (archivo nuevo, detalle por artículo).
+   QUIRK de columnas desplazadas en los renglones viejos (fecha como texto
+   DD.MM.AAAA): las piezas embarcadas vienen en la columna "Fecha Doc.305" y
+   las piezas pendientes en "DOC.CL.MOVTO.304", y el monto del renglón viene
+   en la columna "Dif. Final". En los renglones nuevos (fecha real de Excel)
+   todo va en sus columnas. Reglas por renglón:
+   - monto = primer Costo (siempre)
+   - piezas embarcadas = Fecha Doc.305 si tiene valor numérico, si no Piezas Embarcadas
+   - piezas pendientes = DOC.CL.MOVTO.304 si tiene valor numérico, si no Dif. Final */
+function parseTransfDetallado(filas) {
+  var out = [];
+  filas.forEach(function (r) {
+    if (!str(r['Doc.Interno'])) return;
+    var desc = r['Descripción'];
+    var origenDesc = '', destinoDesc = '';
+    if (Array.isArray(desc)) { origenDesc = str(desc[0]); destinoDesc = str(desc[1]); }
+    else { origenDesc = str(desc); destinoDesc = str(r['Descripción_1']); /* columna duplicada */ }
+    var piezasEmb = valorNumerico(r['Fecha Doc.305']);
+    if (piezasEmb === null) piezasEmb = num(r['Piezas Embarcadas']);
+    var piezasPend = valorNumerico(r['DOC.CL.MOVTO.304']);
+    if (piezasPend === null) piezasPend = num(r['Dif. Final']);
+    out.push({
+      doc: str(r['Doc.Interno']),
+      fechaEmb: parseFecha(r['Fecha Embarque']),
+      origen: str(r['Tda.Origen']),
+      origenDesc: origenDesc,
+      articulo: str(r['Articulo']),
+      destino: str(r['Destino']),
+      destinoDesc: destinoDesc,
+      texto: str(r['Texto']),
+      costo: num(r['Costo']),
+      piezasEmb: piezasEmb,
+      piezasRec: num(r['Piezas Recibidas']),
+      piezasPend: piezasPend,
+      dias: num(r['Dias Transcurridos'])
+    });
+  });
+  return out;
+}
+
+function computeTransfDetallado(filas) {
+  var porDoc = {}, importeTotal = 0, piezasEmb = 0, piezasPend = 0;
+  filas.forEach(function (f) {
+    importeTotal += f.costo; piezasEmb += f.piezasEmb; piezasPend += f.piezasPend;
+    var d = porDoc[f.doc] || { doc: f.doc, fechaEmb: f.fechaEmb, origen: f.origen, origenDesc: f.origenDesc,
+      destino: f.destino, destinoDesc: f.destinoDesc, articulos: 0, importe: 0, piezasEmb: 0, piezasPend: 0, dias: f.dias };
+    d.articulos++; d.importe += f.costo; d.piezasEmb += f.piezasEmb; d.piezasPend += f.piezasPend;
+    if (f.dias > d.dias) d.dias = f.dias;
+    if (f.fechaEmb && (!d.fechaEmb || f.fechaEmb < d.fechaEmb)) d.fechaEmb = f.fechaEmb;
+    porDoc[f.doc] = d;
+  });
+  var docs = Object.keys(porDoc).map(function (k) { return porDoc[k]; });
+  var ant = {}, porOrigen = {}, porDestino = {}, masAntiguo = null;
+  RANGOS.forEach(function (r) { ant[r] = { n: 0, monto: 0, piezas: 0 }; });
+  docs.forEach(function (d) {
+    var rg = rangoDe(d.dias);
+    ant[rg].n++; ant[rg].monto += d.importe; ant[rg].piezas += d.piezasPend;
+    var o = porOrigen[d.origen] || { clave: d.origen, nombre: d.origenDesc, docs: 0, importe: 0, piezas: 0 };
+    o.docs++; o.importe += d.importe; o.piezas += d.piezasPend; porOrigen[d.origen] = o;
+    var t = porDestino[d.destino] || { clave: d.destino, nombre: d.destinoDesc, docs: 0, importe: 0, piezas: 0 };
+    t.docs++; t.importe += d.importe; t.piezas += d.piezasPend; porDestino[d.destino] = t;
+    if (!masAntiguo || d.dias > masAntiguo.dias) masAntiguo = d;
+  });
+  function aLista(m) { return Object.keys(m).map(function (k) { return m[k]; }).sort(function (a, b) { return b.importe - a.importe; }); }
+  docs.sort(function (a, b) { return b.dias - a.dias; });
+  var topArticulos = filas.slice().sort(function (a, b) { return b.costo - a.costo; }).slice(0, 10);
+  return { documentos: docs.length, registros: filas.length, importeTotal: importeTotal,
+    piezasEmb: piezasEmb, piezasPend: piezasPend, porDoc: docs,
+    porOrigen: aLista(porOrigen), porDestino: aLista(porDestino),
+    antiguedad: ant, masAntiguo: masAntiguo, topArticulos: topArticulos };
 }
 
 function parseBloqConcentrado(wb) {
@@ -400,8 +490,9 @@ function computeBloqOrig(filas) {
 /* Exportación para Node (verificación) */
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    parseFecha: parseFecha, num: num, detectarTipo: detectarTipo,
+    parseFecha: parseFecha, num: num, valorNumerico: valorNumerico, detectarTipo: detectarTipo,
     parseMerma: parseMerma, parseTransfDestino: parseTransfDestino,
+    parseTransfDetallado: parseTransfDetallado, computeTransfDetallado: computeTransfDetallado,
     parseTransfSAP: parseTransfSAP, parseBloqConcentrado: parseBloqConcentrado,
     parseBloqOriginal: parseBloqOriginal, sugerirCorte: sugerirCorte,
     computeMerma: computeMerma, computeTransfDestino: computeTransfDestino,
@@ -564,9 +655,42 @@ function renderTransf() {
   var c = ultimaCarga('transf');
   var el = $('transf-panel'), info = $('transf-corte');
   if (!c) { info.textContent = ''; el.innerHTML = '<p class="vacio">Aún no hay transferencias cargadas. Sube el archivo de transferencias arriba.</p>'; return; }
-  info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · Formato: ' + (c.formato === 'destino' ? 'Destino' : 'SAP');
+  info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · Formato: ' + (c.formato === 'destino' ? 'Destino' : c.formato === 'detallado' ? 'Detallado' : 'SAP');
   var html = '';
-  if (c.formato === 'destino') {
+  if (c.formato === 'detallado') {
+    var d = computeTransfDetallado(c.filas);
+    html += '<div class="totales">' +
+      '<div class="total-card destacado"><div class="etiqueta">Importe pendiente</div><div class="valor">' + fmtDinero(d.importeTotal) + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Documentos</div><div class="valor">' + d.documentos + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Piezas pendientes</div><div class="valor">' + fmtNum(d.piezasPend) + '</div></div>' +
+      '<div class="total-card"><div class="etiqueta">Más antiguo</div><div class="valor">' + (d.masAntiguo ? d.masAntiguo.dias + ' días' : '—') + '</div></div></div>';
+    html += '<div class="grafica"><h3>Distribución por antigüedad</h3>' + donutHTML(d.antiguedad, d.importeTotal, false) + '</div>';
+    html += barrasHTML('Pendiente por sucursal origen', d.porOrigen.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.importe }; }), fmtDinero);
+    html += barrasHTML('Pendiente por sucursal destino', d.porDestino.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.importe }; }), fmtDinero);
+    var topRows = d.topArticulos.map(function (f) {
+      var clave = 'transf:art:' + f.doc + ':' + f.articulo;
+      return '<tr><td>' + esc(f.articulo) + '</td><td>' + esc(f.texto) + '</td><td>' + esc(f.doc) + '</td><td class="num">' + fmtDinero(f.costo) + '</td><td class="num">' + fmtNum(f.piezasPend) + '</td><td class="num">' + f.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
+    }).join('');
+    html += '<h3>Artículos más críticos</h3>' + tablaHTML(
+      [{ t: 'Artículo' }, { t: 'Texto' }, { t: 'Documento' }, { t: 'Costo', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }], topRows, '');
+    var docRows = d.porDoc.map(function (x) {
+      var clave = 'transf:' + x.doc;
+      return '<tr><td>' + esc(x.doc) + '</td><td>' + fmtFecha(x.fechaEmb) + '</td><td>' + esc(x.origen) + ' ' + esc(x.origenDesc) + '</td>' +
+        '<td>' + esc(x.destino) + ' ' + esc(x.destinoDesc) + '</td><td class="num">' + x.articulos + '</td><td class="num">' + fmtDinero(x.importe) + '</td>' +
+        '<td class="num">' + fmtNum(x.piezasPend) + '</td><td class="num">' + x.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
+    }).join('');
+    html += '<h3>Detalle por documento</h3>' + tablaHTML(
+      [{ t: 'Documento' }, { t: 'Fecha embarque' }, { t: 'Origen' }, { t: 'Destino' }, { t: 'Artículos', num: true }, { t: 'Importe', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }],
+      docRows, '<td>Total</td><td></td><td></td><td></td><td class="num">' + d.registros + '</td><td class="num">' + fmtDinero(d.importeTotal) + '</td><td class="num">' + fmtNum(d.piezasPend) + '</td><td></td><td></td>');
+    var artRows = c.filas.slice().sort(function (a, b) { return b.costo - a.costo; }).map(function (f) {
+      var clave = 'transf:art:' + f.doc + ':' + f.articulo;
+      return '<tr><td>' + esc(f.articulo) + '</td><td>' + esc(f.texto) + '</td><td>' + esc(f.doc) + '</td><td>' + esc(f.origen) + ' → ' + esc(f.destino) + '</td><td class="num">' + fmtDinero(f.costo) + '</td><td class="num">' + fmtNum(f.piezasEmb) + '</td><td class="num">' + fmtNum(f.piezasPend) + '</td><td class="num">' + f.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
+    }).join('');
+    html += '<h3>Detalle por artículo</h3>' + tablaHTML(
+      [{ t: 'Artículo' }, { t: 'Texto' }, { t: 'Documento' }, { t: 'Origen → Destino' }, { t: 'Costo', num: true }, { t: 'Piezas emb.', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }],
+      artRows, '');
+    if (d.masAntiguo) html += '<p class="hint">Documento más antiguo: ' + esc(d.masAntiguo.doc) + ' de ' + esc(d.masAntiguo.origenDesc || d.masAntiguo.origen) + ' a ' + esc(d.masAntiguo.destinoDesc || d.masAntiguo.destino) + ' (' + d.masAntiguo.dias + ' días, ' + fmtDinero(d.masAntiguo.importe) + ', ' + fmtNum(d.masAntiguo.piezasPend) + ' piezas).</p>';
+  } else if (c.formato === 'destino') {
     var p = computeTransfDestino(c.filas);
     html += '<div class="totales">' +
       '<div class="total-card destacado"><div class="etiqueta">Documentos pendientes</div><div class="valor">' + p.documentos + '</div></div>' +
@@ -693,6 +817,9 @@ function leerArchivo(file) {
         } else if (det.tipo === 'transf' && det.formato === 'destino') {
           filas = parseTransfDestino(filasDeHoja(wb, det.hoja));
           fechas = filas.map(function (f) { return f.fechaEmb; });
+        } else if (det.tipo === 'transf' && det.formato === 'detallado') {
+          filas = parseTransfDetallado(filasDeHoja(wb, det.hoja));
+          fechas = filas.map(function (f) { return f.fechaEmb; });
         } else if (det.tipo === 'transf') {
           filas = parseTransfSAP(wb);
           fechas = filas.map(function (f) { return f.fechaCont; });
@@ -726,6 +853,13 @@ function resumenPendiente(p) {
     var pe = p.filas.reduce(function (a, f) { return a + f.piezasEmb; }, 0);
     var pp = p.filas.reduce(function (a, f) { return a + f.difFinal; }, 0);
     return p.filas.length + ' documentos · ' + fmtNum(pe) + ' piezas embarcadas · ' + fmtNum(pp) + ' pendientes';
+  }
+  if (p.tipo === 'transf' && p.formato === 'detallado') {
+    var im = p.filas.reduce(function (a, f) { return a + f.costo; }, 0);
+    var pd = p.filas.reduce(function (a, f) { return a + f.piezasPend; }, 0);
+    var docs = {};
+    p.filas.forEach(function (f) { docs[f.doc] = 1; });
+    return Object.keys(docs).length + ' documentos · ' + fmtDinero(im) + ' · ' + fmtNum(pd) + ' piezas pendientes · ' + p.filas.length + ' renglones';
   }
   if (p.tipo === 'transf') return 'Total: ' + fmtDinero(p.filas.reduce(function (a, f) { return a + f.importe; }, 0)) + ' · ' + p.filas.length + ' documentos';
   if (p.formato === 'concentrado') return 'Total: ' + fmtDinero(p.filas.reduce(function (a, f) { return a + f.valor; }, 0)) + ' · ' + p.filas.length + ' registros';
@@ -806,7 +940,28 @@ function panelAOA(tipo, carga) {
     p.porCentro.forEach(function (x) { L.push([x.centro, x.monto, x.pct / 100, x.registros, x.entradaMasAntigua, x.dias, x.nivel, x.accion]); });
     L.push(['TOTAL', p.total, 1, p.registros, '', '', '', '']);
   } else if (tipo === 'transf') {
-    if (carga.formato === 'destino') {
+    if (carga.formato === 'detallado') {
+      var dd = computeTransfDetallado(carga.filas);
+      L.push(['TRANSFERENCIAS PENDIENTES (DETALLADO)']);
+      L.push(['Corte', carga.fechaCorte, 'Archivo', carga.nombre]);
+      L.push(['Importe total', dd.importeTotal, 'Documentos', dd.documentos, 'Piezas embarcadas', dd.piezasEmb, 'Piezas pendientes', dd.piezasPend]);
+      L.push([]);
+      L.push(['ANTIGÜEDAD']);
+      L.push(['Rango (días)', 'Documentos', 'Importe', 'Piezas']);
+      RANGOS.forEach(function (r) { L.push([r, dd.antiguedad[r].n, dd.antiguedad[r].monto, dd.antiguedad[r].piezas]); });
+      L.push([]);
+      L.push(['POR SUCURSAL ORIGEN']);
+      L.push(['Origen', 'Nombre', 'Documentos', 'Importe', 'Piezas pendientes']);
+      dd.porOrigen.forEach(function (x) { L.push([x.clave, x.nombre, x.docs, x.importe, x.piezas]); });
+      L.push([]);
+      L.push(['POR SUCURSAL DESTINO']);
+      L.push(['Destino', 'Nombre', 'Documentos', 'Importe', 'Piezas pendientes']);
+      dd.porDestino.forEach(function (x) { L.push([x.clave, x.nombre, x.docs, x.importe, x.piezas]); });
+      L.push([]);
+      L.push(['TOP ARTÍCULOS']);
+      L.push(['Artículo', 'Texto', 'Documento', 'Costo', 'Piezas pendientes', 'Días']);
+      dd.topArticulos.forEach(function (f) { L.push([f.articulo, f.texto, f.doc, f.costo, f.piezasPend, f.dias]); });
+    } else if (carga.formato === 'destino') {
       var q = computeTransfDestino(carga.filas);
       L.push(['TRANSFERENCIAS PENDIENTES (DESTINO)']);
       L.push(['Corte', carga.fechaCorte, 'Archivo', carga.nombre]);
@@ -881,6 +1036,12 @@ function detalleJSON(tipo, carga) {
     return { 'Centro': f.centro, 'Fecha de entrada': f.fechaEntrada, 'Documento material': f.docMaterial, 'Material': f.material,
       'Texto breve material': f.texto, 'Ctd.en UM entrada': f.cantidad, 'Costo Unitario': f.costoUnit, 'Costo Total': f.costoTotal, 'Usuario': f.usuario };
   });
+  if (tipo === 'transf' && carga.formato === 'detallado') return carga.filas.map(function (f) {
+    return { 'Doc.Interno': f.doc, 'Fecha Embarque': f.fechaEmb, 'Tda.Origen': f.origen, 'Descripción origen': f.origenDesc,
+      'Articulo': f.articulo, 'Destino': f.destino, 'Descripción destino': f.destinoDesc, 'Texto': f.texto,
+      'Costo': f.costo, 'Piezas Embarcadas': f.piezasEmb, 'Piezas Recibidas': f.piezasRec,
+      'Piezas Pendientes': f.piezasPend, 'Dias Transcurridos': f.dias };
+  });
   if (tipo === 'transf' && carga.formato === 'destino') return carga.filas.map(function (f) {
     return { 'Doc.Interno': f.doc, 'Fecha Embarque': f.fechaEmb, 'Tda.Origen': f.origen, 'Descripción origen': f.origenDesc,
       'Destino': f.destino, 'Descripción destino': f.destinoDesc, 'Piezas Embarcadas': f.piezasEmb, 'Piezas Recibidas': f.piezasRec,
@@ -914,7 +1075,8 @@ function exportar(tipo) {
     var totalTxt = '';
     if (t === 'merma') totalTxt = fmtDinero(computeMerma(c.filas, c.fechaCorte).total);
     if (t === 'transf' && c.formato === 'destino') totalTxt = fmtNum(computeTransfDestino(c.filas).piezasPend) + ' piezas pendientes';
-    if (t === 'transf' && c.formato !== 'destino') totalTxt = fmtDinero(computeTransfSAP(c.filas).importeTotal);
+    if (t === 'transf' && c.formato === 'detallado') { var dd = computeTransfDetallado(c.filas); totalTxt = fmtDinero(dd.importeTotal) + ' · ' + fmtNum(dd.piezasPend) + ' piezas pendientes'; }
+    if (t === 'transf' && c.formato !== 'destino' && c.formato !== 'detallado') totalTxt = fmtDinero(computeTransfSAP(c.filas).importeTotal);
     if (t === 'bloq' && c.formato === 'concentrado') totalTxt = fmtDinero(computeBloqConc(c.filas, c.resumenHoja).total);
     if (t === 'bloq' && c.formato !== 'concentrado') totalTxt = fmtDinero(computeBloqOrig(c.filas).impacto) + ' impacto';
     resumen.push([etiqueta, c.fechaCorte, totalTxt, c.filas.length]);
