@@ -5,7 +5,7 @@
 
 var LS_KEY = 'panelSeguimiento.v1';
 var RANGOS = ['0-3', '4-7', '8-15', '16-30', '+30'];
-var COLORES_RANGO = ['#1a7f37', '#2e7d32', '#e8a13a', '#d95f02', '#b3261e'];
+var COLORES_RANGO = ['#1d4ed8', '#60a5fa', '#93c5fd', '#fb923c', '#ea580c'];
 
 /* ---------------- utilidades ---------------- */
 function num(v) {
@@ -98,7 +98,7 @@ var COLUMNAS_ESPERADAS =
   'TRANSFERENCIAS (SAP): hoja REPORTE con ZONA, SUCURSAL ORIGEN, DOCUMENTO CONTABLE, FECHA CONTABLE, DIAS TRANSCURRIDOS, IMPORTE, SUCURSAL DESTINO, ESTATUS.\n' +
   'BLOQUEADO (CONCENTRADO): hoja CONCENTRADO con Centro, Material, EAN/UPC, Denomin., Unidad, Jerarquía 2, Almacén, Bloqueado, V. Stock bloq. (y hoja RESUMEN con Centro, Importe bloqueado).\n' +
   'BLOQUEADO (original): Hoja1 con ZONA, Material, Centro, Sucursal, Almacen, Libre Util, Stock Bloq, Cto, Importe, FORMATO, Descripción, Departamento, Clase.\n' +
-  'ROTATIVOS: SUC, ART, TEO, FIS, DIFU, DIFP, FCN, ROL (solo se siguen las sucursales 127, 331, 333, 334 y 1060; la semana va de jueves a miércoles).';
+  'ROTATIVOS: SUC, ART, TEO, FIS, DIFU, DIFP, FCN, ROL (solo se siguen las sucursales 127, 331, 333, 334, 336 y 1060; la semana va de jueves a miércoles).';
 
 function detectarTipo(wb) {
   var hojas = wb.SheetNames || [];
@@ -306,9 +306,9 @@ function computeTransfDetallado(filas) {
   docs.forEach(function (d) {
     var rg = rangoDe(d.dias);
     ant[rg].n++; ant[rg].monto += d.importe; ant[rg].piezas += d.piezasPend;
-    var o = porOrigen[d.origen] || { clave: d.origen, nombre: d.origenDesc, docs: 0, importe: 0, piezas: 0 };
+    var o = porOrigen[d.origen] || { clave: d.origen, nombre: nombreTienda(d.origen, d.origenDesc), docs: 0, importe: 0, piezas: 0 };
     o.docs++; o.importe += d.importe; o.piezas += d.piezasPend; porOrigen[d.origen] = o;
-    var t = porDestino[d.destino] || { clave: d.destino, nombre: d.destinoDesc, docs: 0, importe: 0, piezas: 0 };
+    var t = porDestino[d.destino] || { clave: d.destino, nombre: nombreTienda(d.destino, d.destinoDesc), docs: 0, importe: 0, piezas: 0 };
     t.docs++; t.importe += d.importe; t.piezas += d.piezasPend; porDestino[d.destino] = t;
     if (!masAntiguo || d.dias > masAntiguo.dias) masAntiguo = d;
   });
@@ -430,9 +430,9 @@ function computeTransfDestino(filas) {
     piezasEmb += f.piezasEmb; piezasPend += f.difFinal; costoTotal += f.costoTotal;
     var rg = rangoDe(f.dias);
     ant[rg].n++; ant[rg].piezas += f.difFinal;
-    var o = porOrigen[f.origen] || { clave: f.origen, nombre: f.origenDesc, docs: 0, piezas: 0 };
+    var o = porOrigen[f.origen] || { clave: f.origen, nombre: nombreTienda(f.origen, f.origenDesc), docs: 0, piezas: 0 };
     o.docs++; o.piezas += f.difFinal; porOrigen[f.origen] = o;
-    var d = porDestino[f.destino] || { clave: f.destino, nombre: f.destinoDesc, docs: 0, piezas: 0 };
+    var d = porDestino[f.destino] || { clave: f.destino, nombre: nombreTienda(f.destino, f.destinoDesc), docs: 0, piezas: 0 };
     d.docs++; d.piezas += f.difFinal; porDestino[f.destino] = d;
     if (!masAntiguo || f.dias > masAntiguo.dias) masAntiguo = f;
   });
@@ -448,7 +448,7 @@ function computeTransfSAP(filas) {
     total += f.importe;
     var rg = rangoDe(f.dias);
     ant[rg].n++; ant[rg].monto += f.importe;
-    var o = porOrigen[f.origen] || { clave: f.origen, nombre: f.origenDesc, docs: 0, importe: 0 };
+    var o = porOrigen[f.origen] || { clave: f.origen, nombre: nombreTienda(f.origen, f.origenDesc), docs: 0, importe: 0 };
     o.docs++; o.importe += f.importe; porOrigen[f.origen] = o;
     if (!masAntiguo || f.dias > masAntiguo.dias) masAntiguo = f;
   });
@@ -492,7 +492,7 @@ function fueraPoliticaTransf(carga) {
   }
   var porDestino = {};
   docs.forEach(function (x) {
-    var t = porDestino[x.destino] || { clave: x.destino, nombre: x.destinoDesc, docs: 0, piezas: 0, importe: 0 };
+    var t = porDestino[x.destino] || { clave: x.destino, nombre: nombreTienda(x.destino, x.destinoDesc), docs: 0, piezas: 0, importe: 0 };
     t.docs++; t.piezas += x.piezas; t.importe += x.importe; porDestino[x.destino] = t;
   });
   function aLista(m) { return Object.keys(m).map(function (k) { return m[k]; }).sort(function (a, b) { return (b.importe - a.importe) || (b.piezas - a.piezas); }); }
@@ -529,7 +529,7 @@ function computeBloqOrig(filas) {
     neto += f.importe; impacto += Math.abs(f.importe);
     if (f.stockBloq > 0) { pos += f.stockBloq; posN++; }
     if (f.stockBloq < 0) { neg += f.stockBloq; negN++; }
-    var s = porSuc[f.centro] || { clave: f.centro, nombre: f.sucursal, registros: 0, importe: 0, impacto: 0 };
+    var s = porSuc[f.centro] || { clave: f.centro, nombre: nombreTienda(f.centro, f.sucursal), registros: 0, importe: 0, impacto: 0 };
     s.registros++; s.importe += f.importe; s.impacto += Math.abs(f.importe); porSuc[f.centro] = s;
     var d = porDepto[f.departamento || 'Sin departamento'] || { clave: f.departamento || 'Sin departamento', registros: 0, importe: 0 };
     d.registros++; d.importe += f.importe; porDepto[f.departamento || 'Sin departamento'] = d;
@@ -542,8 +542,24 @@ function computeBloqOrig(filas) {
 }
 
 /* ---------------- rotativos (conteos semanales por sucursal) ---------------- */
-var ROT_SUC = ['127', '331', '333', '334', '1060'];
-var ROT_META = { '127': 200, '331': 50, '333': 50, '334': 100, '1060': 50 };
+var ROT_SUC = ['127', '331', '333', '334', '336', '1060'];
+var ROT_META = { '127': 200, '331': 50, '333': 50, '334': 100, '336': 50, '1060': 50 };
+
+/* Catálogo de tiendas del usuario (catalogo_tiendas.xlsx). Se usa el nombre
+   completo en todos los lugares donde el panel muestra una sucursal. */
+var CATALOGO_TIENDAS = {
+  '127': 'CHEDRAUI SELECTO LA PAZ COLIMA',
+  '331': 'SUPERCITO MAS ARAMBURO LA PAZ 16 DE SEP',
+  '333': 'SUPERCITO SELECTO ARAMBURO LA PAZ MADERO',
+  '334': 'SUPER CHEDRAUI ARAMBURO LA PAZ OCAMPO',
+  '336': 'SUPERCITO MAS ARAMBURO LA PAZ MARQUES DE LEON',
+  '1060': 'SUPERCITO LA PAZ EL CENTENARIO'
+};
+function nombreTienda(codigo, fallback) {
+  var c = sucNormalizada(codigo);
+  if (CATALOGO_TIENDAS[c]) return CATALOGO_TIENDAS[c];
+  return (fallback !== undefined && fallback !== null && fallback !== '') ? fallback : str(codigo);
+}
 
 function sucNormalizada(v) {
   var s = str(v).replace(/^0+/, '');
@@ -569,7 +585,7 @@ function etiquetaSemana(juevesISO) {
     '–' + m.slice(8, 10) + '/' + m.slice(5, 7) + '/' + m.slice(0, 4);
 }
 
-/* Solo se siguen las 5 sucursales de ROT_SUC; los demás SUC del archivo se ignoran.
+/* Solo se siguen las 6 sucursales de ROT_SUC; los demás SUC del archivo se ignoran.
    FCN puede venir como fecha de Excel o como texto DD.MM.AAAA (parseFecha lo cubre). */
 function parseRotativos(filas) {
   var out = [];
@@ -631,6 +647,47 @@ function computeRotativos(filas) {
     totalConteos: Object.keys(rolesTotales).length };
 }
 
+/* Mayores diferencias del último corte de rotativos: top 10 faltantes
+   (diferencia más negativa) y top 10 sobrantes (diferencia más positiva),
+   en dinero (DIFP) y en piezas (DIFU). Si hay menos de 10, salen los que hay. */
+function computeTopDiferencias(filas) {
+  var faltDin = filas.filter(function (f) { return f.difp < 0; }).sort(function (a, b) { return a.difp - b.difp; }).slice(0, 10);
+  var sobDin = filas.filter(function (f) { return f.difp > 0; }).sort(function (a, b) { return b.difp - a.difp; }).slice(0, 10);
+  var faltPzas = filas.filter(function (f) { return f.difu < 0; }).sort(function (a, b) { return a.difu - b.difu; }).slice(0, 10);
+  var sobPzas = filas.filter(function (f) { return f.difu > 0; }).sort(function (a, b) { return b.difu - a.difu; }).slice(0, 10);
+  return { faltantesDinero: faltDin, sobrantesDinero: sobDin,
+    faltantesPiezas: faltPzas, sobrantesPiezas: sobPzas };
+}
+
+/* Agregación semanal de TODOS los cortes de rotativos. Por cada par
+   (semana, sucursal) manda el corte más nuevo que tenga renglones de ese
+   par; si ningún corte trae renglones del par, queda en 0/Pendiente. Así
+   las semanas no se duplican entre cortes y no se pierde el historial. */
+function computeRotativosMulti(cortes) {
+  var porPar = {};
+  var semanasSet = {};
+  var orden = (cortes || []).slice().sort(function (a, b) { return (a.fechaCorte < b.fechaCorte) ? -1 : 1; });
+  orden.forEach(function (c) {
+    var rp = computeRotativos(c.filas);
+    rp.filas.forEach(function (x) {
+      if (x.articulos > 0) porPar[x.semana + '|' + x.suc] = x;
+      semanasSet[x.semana] = 1;
+    });
+  });
+  var semanas = Object.keys(semanasSet).sort().reverse();
+  var filas = [];
+  semanas.forEach(function (sem) {
+    ROT_SUC.forEach(function (suc) {
+      var x = porPar[sem + '|' + suc];
+      if (x) filas.push(x);
+      else filas.push({ semana: sem, etiqueta: etiquetaSemana(sem), suc: suc,
+        articulos: 0, conteos: 0, meta: ROT_META[suc], cumplimiento: 0,
+        estatus: 'Pendiente', difu: 0, difp: 0, conDif: 0, exactitud: 0 });
+    });
+  });
+  return { filas: filas, semanas: semanas };
+}
+
 /* Sección fuera de política para la hoja Panel de la exportación de transferencias. */
 function fueraPoliticaAOA(L, fp) {
   L.push(['FUERA DE POLÍTICA (más de 3 días)']);
@@ -656,7 +713,7 @@ function fueraPoliticaAOA(L, fp) {
   if (fp.tieneImporte) hd2.push('Importe');
   L.push(hd2);
   fp.detalle.forEach(function (x) {
-    var r = [x.doc, x.fechaEmb, x.origen + ' ' + x.origenDesc, x.destino + ' ' + x.destinoDesc, x.dias];
+    var r = [x.doc, x.fechaEmb, x.origen + ' ' + nombreTienda(x.origen, x.origenDesc), x.destino + ' ' + nombreTienda(x.destino, x.destinoDesc), x.dias];
     if (fp.tienePiezas) r.push(x.piezas);
     if (fp.tieneImporte) r.push(x.importe);
     L.push(r);
@@ -664,17 +721,32 @@ function fueraPoliticaAOA(L, fp) {
   L.push([]);
 }
 
-function panelAOA(tipo, carga) {
+function topDifAOA(L, titulo, filasTop) {
+  L.push([titulo]);
+  L.push(['Sucursal', 'Artículo', 'Descripción', 'TEO', 'FIS', 'Dif. pzas', 'Dif. $']);
+  filasTop.forEach(function (f) {
+    L.push([f.suc + ' ' + nombreTienda(f.suc), f.articulo, f.descripcion, f.teo, f.fis, f.difu, f.difp]);
+  });
+  L.push([]);
+}
+
+function panelAOA(tipo, carga, cortesRot) {
   var L = [];
   if (tipo === 'rot') {
     var rp = computeRotativos(carga.filas);
+    var top = computeTopDiferencias(carga.filas);
+    var sem = (cortesRot && cortesRot.length) ? computeRotativosMulti(cortesRot) : rp;
     L.push(['ROTATIVOS — PRODUCTIVIDAD DE CONTEOS (semana de jueves a miércoles)']);
     L.push(['Corte', carga.fechaCorte, 'Archivo', carga.nombre]);
-    L.push(['Artículos totales', rp.totalArticulos, 'Conteos', rp.totalConteos, 'Semanas', rp.semanas.length]);
+    L.push(['Artículos totales', rp.totalArticulos, 'Conteos', rp.totalConteos, 'Semanas', sem.semanas.length]);
     L.push([]);
+    topDifAOA(L, 'MAYORES DIFERENCIAS EN $ — FALTANTES (Top 10)', top.faltantesDinero);
+    topDifAOA(L, 'MAYORES DIFERENCIAS EN $ — SOBRANTES (Top 10)', top.sobrantesDinero);
+    topDifAOA(L, 'MAYORES DIFERENCIAS EN PIEZAS — FALTANTES (Top 10)', top.faltantesPiezas);
+    topDifAOA(L, 'MAYORES DIFERENCIAS EN PIEZAS — SOBRANTES (Top 10)', top.sobrantesPiezas);
     L.push(['PRODUCTIVIDAD SEMANAL POR SUCURSAL']);
     L.push(['Semana', 'Sucursal', 'Artículos', 'Meta', '% cumplimiento', 'Conteos', 'DIFU', 'DIFP', 'Art. con diferencia', 'Exactitud', 'Estatus']);
-    rp.filas.forEach(function (x) { L.push([x.etiqueta, x.suc, x.articulos, x.meta, x.cumplimiento / 100, x.conteos, x.difu, x.difp, x.conDif, x.exactitud / 100, x.estatus]); });
+    sem.filas.forEach(function (x) { L.push([x.etiqueta, x.suc + ' ' + nombreTienda(x.suc), x.articulos, x.meta, x.cumplimiento / 100, x.conteos, x.difu, x.difp, x.conDif, x.exactitud / 100, x.estatus]); });
     return L;
   }
   if (tipo === 'merma') {
@@ -689,7 +761,7 @@ function panelAOA(tipo, carga) {
     L.push([]);
     L.push(['DETALLE POR SUCURSAL']);
     L.push(['Sucursal', 'Monto pendiente', '% total', 'Registros', 'Entrada más antigua', 'Días', 'Nivel', 'Acción']);
-    p.porCentro.forEach(function (x) { L.push([x.centro, x.monto, x.pct / 100, x.registros, x.entradaMasAntigua, x.dias, x.nivel, x.accion]); });
+    p.porCentro.forEach(function (x) { L.push([x.centro + ' ' + nombreTienda(x.centro), x.monto, x.pct / 100, x.registros, x.entradaMasAntigua, x.dias, x.nivel, x.accion]); });
     L.push(['TOTAL', p.total, 1, p.registros, '', '', '', '']);
   } else if (tipo === 'transf') {
     if (carga.formato === 'detallado') {
@@ -756,7 +828,7 @@ function panelAOA(tipo, carga) {
       L.push([]);
       L.push(['POR CENTRO']);
       L.push(['Centro', 'Registros', 'Unidades', 'Importe']);
-      b.porCentro.forEach(function (x) { L.push([x.clave, x.registros, x.unidades, x.valor]); });
+      b.porCentro.forEach(function (x) { L.push([x.clave + ' ' + nombreTienda(x.clave), x.registros, x.unidades, x.valor]); });
       L.push([]);
       L.push(['POR JERARQUÍA 2']);
       L.push(['Jerarquía', 'Registros', 'Importe']);
@@ -788,7 +860,7 @@ function panelAOA(tipo, carga) {
 }
 function detalleJSON(tipo, carga) {
   if (tipo === 'rot') return carga.filas.map(function (f) {
-    return { 'Sucursal': f.suc, 'Fecha': f.fecha, 'ROL': f.rol, 'Artículo': f.articulo, 'Descripción': f.descripcion,
+    return { 'Sucursal': f.suc + ' ' + nombreTienda(f.suc), 'Fecha': f.fecha, 'ROL': f.rol, 'Artículo': f.articulo, 'Descripción': f.descripcion,
       'TEO': f.teo, 'FIS': f.fis, 'DIFU': f.difu, 'DIFP': f.difp };
   });
   if (tipo === 'merma') return carga.filas.map(function (f) {
@@ -854,7 +926,7 @@ function resumenMermaTexto(carga, totalAnterior) {
   L.push('Distribución por antigüedad: ' + dist);
   L.push('Detalle por sucursal:');
   p.porCentro.forEach(function (x) {
-    L.push('  ' + x.centro + ': ' + fmtDinero(x.monto) + ' · ' + x.registros + ' registros · ' + x.nivel);
+    L.push('  ' + nombreTienda(x.centro) + ': ' + fmtDinero(x.monto) + ' · ' + x.registros + ' registros · ' + x.nivel);
   });
   return L.join('\n');
 }
@@ -865,12 +937,12 @@ function resumenBloqTexto(carga) {
   if (carga.formato === 'concentrado') {
     var p = computeBloqConc(carga.filas, carga.resumenHoja);
     L.push('IMPORTE BLOQUEADO: ' + fmtDinero(p.total) + ' · REGISTROS: ' + p.registros + ' · UNIDADES BLOQUEADAS: ' + fmtNum(p.unidades, 3) + ' · CENTROS: ' + p.porCentro.length);
-    L.push('Importe por centro: ' + p.porCentro.map(function (x) { return x.clave + ' ' + fmtDineroSigno(x.valor); }).join(' · '));
+    L.push('Importe por centro: ' + p.porCentro.map(function (x) { return nombreTienda(x.clave) + ' ' + fmtDineroSigno(x.valor); }).join(' · '));
     L.push('Por Jerarquía 2: ' + p.porJerarquia.map(function (x) { return x.clave + ' ' + fmtDineroSigno(x.valor); }).join(' · '));
   } else {
     var q = computeBloqOrig(carga.filas);
     L.push('IMPACTO ABSOLUTO: ' + fmtDinero(q.impacto) + ' · IMPORTE NETO: ' + fmtDinero(q.neto) + ' · REGISTROS: ' + q.registros + ' · STOCK +: ' + fmtNum(q.stockPos, 1) + ' / STOCK -: ' + fmtNum(q.stockNeg, 1));
-    L.push('Impacto por sucursal: ' + q.porSucursal.map(function (x) { return x.clave + ' ' + fmtDineroSigno(x.impacto); }).join(' · '));
+    L.push('Impacto por sucursal: ' + q.porSucursal.map(function (x) { return nombreTienda(x.clave, x.nombre) + ' ' + fmtDineroSigno(x.impacto); }).join(' · '));
     L.push('Por departamento: ' + q.porDepartamento.map(function (x) { return x.clave + ' ' + fmtDineroSigno(x.importe); }).join(' · '));
   }
   return L.join('\n');
@@ -882,7 +954,7 @@ function lineaFueraPolitica(fp) {
   if (fp.tieneImporte) t += ' · ' + fmtDinero(fp.importe);
   if (fp.porDestino.length) {
     t += '\nPor destino fuera de política: ' + fp.porDestino.map(function (x) {
-      var s = x.clave + ' ';
+      var s = nombreTienda(x.clave, x.nombre) + ' ';
       if (fp.tieneImporte) s += fmtDinero(x.importe);
       if (fp.tienePiezas) s += (fp.tieneImporte ? ' ' : '') + fmtNum(x.piezas) + ' piezas';
       s += ' (' + x.docs + (x.docs === 1 ? ' doc' : ' docs') + ')';
@@ -900,38 +972,62 @@ function resumenTransfTexto(carga) {
     L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · ' + d.documentos + ' documentos');
     L.push('IMPORTE PENDIENTE: ' + fmtDinero(d.importeTotal) + ' · PIEZAS PENDIENTES: ' + fmtNum(d.piezasPend) + ' · RENGLONES: ' + d.registros);
     L.push(lineaFueraPolitica(fp));
-    if (d.masAntiguo) L.push('Documento más antiguo: ' + (d.masAntiguo.origenDesc || d.masAntiguo.origen) + ' ' + fmtFecha(d.masAntiguo.fechaEmb) + ', ' + d.masAntiguo.dias + ' días, ' + fmtDinero(d.masAntiguo.importe) + ', ' + fmtNum(d.masAntiguo.piezasPend) + ' piezas');
-    L.push('Por origen: ' + d.porOrigen.map(function (x) { return x.clave + ' ' + fmtDinero(x.importe); }).join(' · '));
-    L.push('Por destino: ' + d.porDestino.map(function (x) { return x.clave + ' ' + fmtDinero(x.importe); }).join(' · '));
+    if (d.masAntiguo) L.push('Documento más antiguo: ' + nombreTienda(d.masAntiguo.origen, d.masAntiguo.origenDesc) + ' ' + fmtFecha(d.masAntiguo.fechaEmb) + ', ' + d.masAntiguo.dias + ' días, ' + fmtDinero(d.masAntiguo.importe) + ', ' + fmtNum(d.masAntiguo.piezasPend) + ' piezas');
+    L.push('Por origen: ' + d.porOrigen.map(function (x) { return nombreTienda(x.clave, x.nombre) + ' ' + fmtDinero(x.importe); }).join(' · '));
+    L.push('Por destino: ' + d.porDestino.map(function (x) { return nombreTienda(x.clave, x.nombre) + ' ' + fmtDinero(x.importe); }).join(' · '));
   } else if (carga.formato === 'destino') {
     var p = computeTransfDestino(carga.filas);
     L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · ' + p.documentos + ' documentos');
     L.push('PIEZAS EMBARCADAS: ' + fmtNum(p.piezasEmb) + ' · PIEZAS PENDIENTES: ' + fmtNum(p.piezasPend) + (p.costoTotal ? ' · IMPORTE: ' + fmtDinero(p.costoTotal) : ''));
     L.push(lineaFueraPolitica(fp));
-    if (p.masAntiguo) L.push('Documento más antiguo: ' + (p.masAntiguo.origenDesc || p.masAntiguo.origen) + ' ' + fmtFecha(p.masAntiguo.fechaEmb) + ', ' + p.masAntiguo.dias + ' días, ' + fmtNum(p.masAntiguo.difFinal) + ' piezas');
-    L.push('Por origen: ' + p.porOrigen.map(function (x) { return x.clave + ' ' + fmtNum(x.piezas) + ' piezas'; }).join(' · '));
-    L.push('Por destino: ' + p.porDestino.map(function (x) { return x.clave + ' ' + fmtNum(x.piezas) + ' piezas'; }).join(' · '));
+    if (p.masAntiguo) L.push('Documento más antiguo: ' + nombreTienda(p.masAntiguo.origen, p.masAntiguo.origenDesc) + ' ' + fmtFecha(p.masAntiguo.fechaEmb) + ', ' + p.masAntiguo.dias + ' días, ' + fmtNum(p.masAntiguo.difFinal) + ' piezas');
+    L.push('Por origen: ' + p.porOrigen.map(function (x) { return nombreTienda(x.clave, x.nombre) + ' ' + fmtNum(x.piezas) + ' piezas'; }).join(' · '));
+    L.push('Por destino: ' + p.porDestino.map(function (x) { return nombreTienda(x.clave, x.nombre) + ' ' + fmtNum(x.piezas) + ' piezas'; }).join(' · '));
   } else {
     var q = computeTransfSAP(carga.filas);
     L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · ' + q.documentos + ' documentos');
     L.push('IMPORTE PENDIENTE: ' + fmtDinero(q.importeTotal) + ' · DOCUMENTOS: ' + q.documentos);
     L.push(lineaFueraPolitica(fp));
-    if (q.masAntiguo) L.push('Documento más antiguo: ' + (q.masAntiguo.origenDesc || q.masAntiguo.origen) + ' ' + fmtFecha(q.masAntiguo.fechaCont) + ', ' + q.masAntiguo.dias + ' días, ' + fmtDinero(q.masAntiguo.importe));
-    L.push('Por origen: ' + q.porOrigen.map(function (x) { return x.clave + ' ' + fmtDinero(x.importe); }).join(' · '));
+    if (q.masAntiguo) L.push('Documento más antiguo: ' + nombreTienda(q.masAntiguo.origen, q.masAntiguo.origenDesc) + ' ' + fmtFecha(q.masAntiguo.fechaCont) + ', ' + q.masAntiguo.dias + ' días, ' + fmtDinero(q.masAntiguo.importe));
+    L.push('Por origen: ' + q.porOrigen.map(function (x) { return nombreTienda(x.clave, x.nombre) + ' ' + fmtDinero(x.importe); }).join(' · '));
   }
   return L.join('\n');
 }
-function resumenRotTexto(carga) {
+function lineaTopDif(f) {
+  return '  ' + f.suc + ' ' + nombreTienda(f.suc) + ' · Art. ' + f.articulo + ' ' + f.descripcion +
+    ' · TEO ' + fmtNum(f.teo) + ' · FIS ' + fmtNum(f.fis) + ' · DIFU ' + fmtNum(f.difu) + ' · DIFP ' + fmtDifp(f.difp);
+}
+function resumenRotTexto(carga, filasSemanales) {
   var p = computeRotativos(carga.filas);
+  var top = computeTopDiferencias(carga.filas);
+  var sem = filasSemanales || p.filas;
   var L = [];
   L.push('Rotativos — Productividad de conteos');
-  var sem = p.semanas.length ? p.semanas[0] : null;
-  L.push('Semana: ' + (sem ? etiquetaSemana(sem).replace('Semana ', '') : '—') + ' · Archivo: ' + carga.nombre);
-  if (sem) {
-    p.filas.filter(function (x) { return x.semana === sem; }).forEach(function (x) {
-      L.push(x.suc + ': ' + x.articulos + ' artículos de ' + x.meta + ' (' + Math.round(x.cumplimiento) + '%) · ' + x.conteos + (x.conteos === 1 ? ' conteo' : ' conteos') + ' · DIFU ' + fmtNum(x.difu) + ' · DIFP ' + fmtDifp(x.difp));
+  var ultSem = p.semanas.length ? p.semanas[0] : null;
+  L.push('Semana: ' + (ultSem ? etiquetaSemana(ultSem).replace('Semana ', '') : '—') + ' · Archivo: ' + carga.nombre);
+  if (ultSem) {
+    p.filas.filter(function (x) { return x.semana === ultSem; }).forEach(function (x) {
+      L.push(nombreTienda(x.suc) + ': ' + x.articulos + ' artículos de ' + x.meta + ' (' + Math.round(x.cumplimiento) + '%) · ' + x.conteos + (x.conteos === 1 ? ' conteo' : ' conteos') + ' · DIFU ' + fmtNum(x.difu) + ' · DIFP ' + fmtDifp(x.difp));
     });
   }
+  L.push('MAYORES DIFERENCIAS EN $ — FALTANTES (Top 10):');
+  if (top.faltantesDinero.length) top.faltantesDinero.forEach(function (f) { L.push(lineaTopDif(f)); });
+  else L.push('  Sin faltantes en este corte.');
+  L.push('MAYORES DIFERENCIAS EN $ — SOBRANTES (Top 10):');
+  if (top.sobrantesDinero.length) top.sobrantesDinero.forEach(function (f) { L.push(lineaTopDif(f)); });
+  else L.push('  Sin sobrantes en este corte.');
+  L.push('MAYORES DIFERENCIAS EN PIEZAS — FALTANTES (Top 10):');
+  if (top.faltantesPiezas.length) top.faltantesPiezas.forEach(function (f) { L.push(lineaTopDif(f)); });
+  else L.push('  Sin faltantes en este corte.');
+  L.push('MAYORES DIFERENCIAS EN PIEZAS — SOBRANTES (Top 10):');
+  if (top.sobrantesPiezas.length) top.sobrantesPiezas.forEach(function (f) { L.push(lineaTopDif(f)); });
+  else L.push('  Sin sobrantes en este corte.');
+  L.push('PRODUCTIVIDAD SEMANAL POR SUCURSAL:');
+  if (sem.length) {
+    sem.forEach(function (x) {
+      L.push('  ' + x.etiqueta.replace('Semana ', '') + ' · ' + nombreTienda(x.suc) + ': ' + x.articulos + ' artículos de ' + x.meta + ' (' + Math.round(x.cumplimiento) + '%) · ' + x.conteos + (x.conteos === 1 ? ' conteo' : ' conteos') + ' · DIFU ' + fmtNum(x.difu) + ' · DIFP ' + fmtDifp(x.difp) + ' · Exactitud ' + (x.articulos ? x.exactitud.toFixed(1) + '%' : '—') + ' · ' + x.estatus);
+    });
+  } else L.push('  Sin semanas.');
   return L.join('\n');
 }
 /* Recibe los TEXTOS ya armados {merma, transf, bloq, rot}; junta los que existan
@@ -957,6 +1053,8 @@ if (typeof module !== 'undefined' && module.exports) {
     computeTransfSAP: computeTransfSAP, computeBloqConc: computeBloqConc,
     computeBloqOrig: computeBloqOrig, filasDeHoja: filasDeHoja,
     parseRotativos: parseRotativos, computeRotativos: computeRotativos,
+    computeTopDiferencias: computeTopDiferencias, computeRotativosMulti: computeRotativosMulti,
+    nombreTienda: nombreTienda, CATALOGO_TIENDAS: CATALOGO_TIENDAS,
     juevesDe: juevesDe, etiquetaSemana: etiquetaSemana,
     panelAOA: panelAOA, detalleJSON: detalleJSON,
     resumenMermaTexto: resumenMermaTexto, resumenBloqTexto: resumenBloqTexto,
@@ -1020,8 +1118,8 @@ function dibujarBarras(canvas, items, fmt) {
   var max = Math.max.apply(null, items.map(function (i) { return i.valor; })) || 1;
   var bw = Math.min(48, (W - 20) / items.length - 10);
   var grad = ctx.createLinearGradient(0, 0, 0, H);
-  grad.addColorStop(0, '#2563eb');
-  grad.addColorStop(1, '#0e7c7b');
+  grad.addColorStop(0, '#1d4ed8');
+  grad.addColorStop(1, '#f97316');
   items.forEach(function (it, i) {
     var h = Math.max(2, (it.valor / max) * (H - 52));
     var x = 10 + i * ((W - 20) / items.length) + ((W - 20) / items.length - bw) / 2;
@@ -1144,7 +1242,7 @@ function renderMerma() {
   html += barrasHTML('Top sucursales por monto', p.porCentro.slice(0, 6).map(function (x) { return { etiqueta: x.centro, valor: x.monto }; }), fmtDinero);
   var rows = p.porCentro.map(function (x) {
     var clave = 'merma:' + x.centro;
-    return '<tr><td>' + esc(x.centro) + '</td><td class="num">' + fmtDinero(x.monto) + '</td><td class="num">' + x.pct.toFixed(1) + '%</td>' +
+    return '<tr><td>' + esc(x.centro) + ' ' + esc(nombreTienda(x.centro)) + '</td><td class="num">' + fmtDinero(x.monto) + '</td><td class="num">' + x.pct.toFixed(1) + '%</td>' +
       '<td class="num">' + x.registros + '</td><td>' + fmtFecha(x.entradaMasAntigua) + '</td><td class="num">' + (x.dias === null ? '—' : x.dias) + '</td>' +
       '<td><span class="nivel ' + x.nivel.toLowerCase() + '">' + x.nivel + '</span></td><td>' + esc(x.accion) + '</td>' +
       '<td>' + segControl('merma', clave) + '</td></tr>';
@@ -1196,8 +1294,8 @@ function fueraPoliticaHTML(c) {
   detHeaders.push({ t: 'Seguimiento' });
   var detRows = fp.detalle.map(function (x) {
     var clave = 'transf:' + x.doc;
-    return '<tr><td>' + esc(x.doc) + '</td><td>' + fmtFecha(x.fechaEmb) + '</td><td>' + esc(x.origen) + ' ' + esc(x.origenDesc) + '</td>' +
-      '<td>' + esc(x.destino) + ' ' + esc(x.destinoDesc) + '</td><td class="num">' + x.dias + '</td>' +
+    return '<tr><td>' + esc(x.doc) + '</td><td>' + fmtFecha(x.fechaEmb) + '</td><td>' + esc(x.origen) + ' ' + esc(nombreTienda(x.origen, x.origenDesc)) + '</td>' +
+      '<td>' + esc(x.destino) + ' ' + esc(nombreTienda(x.destino, x.destinoDesc)) + '</td><td class="num">' + x.dias + '</td>' +
       (fp.tienePiezas ? '<td class="num">' + fmtNum(x.piezas) + '</td>' : '') +
       (fp.tieneImporte ? '<td class="num">' + fmtDinero(x.importe) + '</td>' : '') +
       '<td>' + segControl('transf', clave) + '</td></tr>';
@@ -1234,8 +1332,8 @@ function renderTransf() {
       [{ t: 'Artículo' }, { t: 'Texto' }, { t: 'Documento' }, { t: 'Costo', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }], topRows, '');
     var docRows = d.porDoc.map(function (x) {
       var clave = 'transf:' + x.doc;
-      return '<tr><td>' + esc(x.doc) + '</td><td>' + fmtFecha(x.fechaEmb) + '</td><td>' + esc(x.origen) + ' ' + esc(x.origenDesc) + '</td>' +
-        '<td>' + esc(x.destino) + ' ' + esc(x.destinoDesc) + '</td><td class="num">' + x.articulos + '</td><td class="num">' + fmtDinero(x.importe) + '</td>' +
+      return '<tr><td>' + esc(x.doc) + '</td><td>' + fmtFecha(x.fechaEmb) + '</td><td>' + esc(x.origen) + ' ' + esc(nombreTienda(x.origen, x.origenDesc)) + '</td>' +
+        '<td>' + esc(x.destino) + ' ' + esc(nombreTienda(x.destino, x.destinoDesc)) + '</td><td class="num">' + x.articulos + '</td><td class="num">' + fmtDinero(x.importe) + '</td>' +
         '<td class="num">' + fmtNum(x.piezasPend) + '</td><td class="num">' + x.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
     }).join('');
     html += '<h3>Detalle por documento</h3>' + tablaHTML(
@@ -1245,13 +1343,13 @@ function renderTransf() {
     if (soloFPTransf) artFilas = artFilas.filter(function (f) { return f.dias > POLITICA_DIAS_MAX; });
     var artRows = artFilas.map(function (f) {
       var clave = 'transf:art:' + f.doc + ':' + f.articulo;
-      return '<tr><td>' + esc(f.articulo) + '</td><td>' + esc(f.texto) + '</td><td>' + esc(f.doc) + '</td><td>' + esc(f.origen) + ' → ' + esc(f.destino) + '</td><td class="num">' + fmtDinero(f.costo) + '</td><td class="num">' + fmtNum(f.piezasEmb) + '</td><td class="num">' + fmtNum(f.piezasPend) + '</td><td class="num">' + f.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
+      return '<tr><td>' + esc(f.articulo) + '</td><td>' + esc(f.texto) + '</td><td>' + esc(f.doc) + '</td><td>' + esc(nombreTienda(f.origen, f.origenDesc)) + ' → ' + esc(nombreTienda(f.destino, f.destinoDesc)) + '</td><td class="num">' + fmtDinero(f.costo) + '</td><td class="num">' + fmtNum(f.piezasEmb) + '</td><td class="num">' + fmtNum(f.piezasPend) + '</td><td class="num">' + f.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
     }).join('');
     html += '<h3>Detalle por artículo' + (soloFPTransf ? ' — solo fuera de política (' + artFilas.length + ' de ' + c.filas.length + ' renglones)' : '') + '</h3>' +
       '<div class="filtro-fp"><label><input type="checkbox" data-filtro-fp="transf"' + (soloFPTransf ? ' checked' : '') + '> Solo fuera de política (más de 3 días)</label></div>' + tablaHTML(
       [{ t: 'Artículo' }, { t: 'Texto' }, { t: 'Documento' }, { t: 'Origen → Destino' }, { t: 'Costo', num: true }, { t: 'Piezas emb.', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }],
       artRows, '');
-    if (d.masAntiguo) html += '<p class="hint">Documento más antiguo: ' + esc(d.masAntiguo.doc) + ' de ' + esc(d.masAntiguo.origenDesc || d.masAntiguo.origen) + ' a ' + esc(d.masAntiguo.destinoDesc || d.masAntiguo.destino) + ' (' + d.masAntiguo.dias + ' días, ' + fmtDinero(d.masAntiguo.importe) + ', ' + fmtNum(d.masAntiguo.piezasPend) + ' piezas).</p>';
+    if (d.masAntiguo) html += '<p class="hint">Documento más antiguo: ' + esc(d.masAntiguo.doc) + ' de ' + esc(nombreTienda(d.masAntiguo.origen, d.masAntiguo.origenDesc)) + ' a ' + esc(nombreTienda(d.masAntiguo.destino, d.masAntiguo.destinoDesc)) + ' (' + d.masAntiguo.dias + ' días, ' + fmtDinero(d.masAntiguo.importe) + ', ' + fmtNum(d.masAntiguo.piezasPend) + ' piezas).</p>';
   } else if (c.formato === 'destino') {
     var p = computeTransfDestino(c.filas);
     html += '<div class="totales">' +
@@ -1264,14 +1362,14 @@ function renderTransf() {
     html += barrasHTML('Pendiente por sucursal destino (piezas)', p.porDestino.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.piezas }; }), fmtNum);
     var rows = c.filas.slice().sort(function (a, b) { return b.dias - a.dias; }).map(function (f) {
       var clave = 'transf:' + f.doc;
-      return '<tr><td>' + esc(f.doc) + '</td><td>' + fmtFecha(f.fechaEmb) + '</td><td>' + esc(f.origen) + ' ' + esc(f.origenDesc) + '</td>' +
-        '<td>' + esc(f.destino) + ' ' + esc(f.destinoDesc) + '</td><td class="num">' + fmtNum(f.piezasEmb) + '</td><td class="num">' + fmtNum(f.difFinal) + '</td>' +
+      return '<tr><td>' + esc(f.doc) + '</td><td>' + fmtFecha(f.fechaEmb) + '</td><td>' + esc(f.origen) + ' ' + esc(nombreTienda(f.origen, f.origenDesc)) + '</td>' +
+        '<td>' + esc(f.destino) + ' ' + esc(nombreTienda(f.destino, f.destinoDesc)) + '</td><td class="num">' + fmtNum(f.piezasEmb) + '</td><td class="num">' + fmtNum(f.difFinal) + '</td>' +
         '<td class="num">' + f.dias + '</td><td>' + segControl('transf', clave) + '</td></tr>';
     }).join('');
     html += '<h3>Detalle por documento</h3>' + tablaHTML(
       [{ t: 'Documento' }, { t: 'Fecha embarque' }, { t: 'Origen' }, { t: 'Destino' }, { t: 'Piezas emb.', num: true }, { t: 'Piezas pend.', num: true }, { t: 'Días', num: true }, { t: 'Seguimiento' }],
       rows, '<td>Total</td><td></td><td></td><td></td><td class="num">' + fmtNum(p.piezasEmb) + '</td><td class="num">' + fmtNum(p.piezasPend) + '</td><td></td><td></td>');
-    if (p.masAntiguo) html += '<p class="hint">Documento más antiguo: ' + esc(p.masAntiguo.doc) + ' de ' + esc(p.masAntiguo.origenDesc || p.masAntiguo.origen) + ' (' + p.masAntiguo.dias + ' días).</p>';
+    if (p.masAntiguo) html += '<p class="hint">Documento más antiguo: ' + esc(p.masAntiguo.doc) + ' de ' + esc(nombreTienda(p.masAntiguo.origen, p.masAntiguo.origenDesc)) + ' (' + p.masAntiguo.dias + ' días).</p>';
   } else {
     var q = computeTransfSAP(c.filas);
     html += '<div class="totales">' +
@@ -1283,8 +1381,8 @@ function renderTransf() {
     html += barrasHTML('Pendiente por sucursal origen', q.porOrigen.slice(0, 6).map(function (x) { return { etiqueta: x.clave, valor: x.importe }; }), fmtDinero);
     var rows2 = c.filas.slice().sort(function (a, b) { return b.dias - a.dias; }).map(function (f) {
       var clave = 'transf:' + f.doc;
-      return '<tr><td>' + esc(f.doc) + '</td><td>' + fmtFecha(f.fechaCont) + '</td><td>' + esc(f.origen) + ' ' + esc(f.origenDesc) + '</td>' +
-        '<td>' + esc(f.destino) + ' ' + esc(f.destinoDesc) + '</td><td class="num">' + fmtDinero(f.importe) + '</td>' +
+      return '<tr><td>' + esc(f.doc) + '</td><td>' + fmtFecha(f.fechaCont) + '</td><td>' + esc(f.origen) + ' ' + esc(nombreTienda(f.origen, f.origenDesc)) + '</td>' +
+        '<td>' + esc(f.destino) + ' ' + esc(nombreTienda(f.destino, f.destinoDesc)) + '</td><td class="num">' + fmtDinero(f.importe) + '</td>' +
         '<td class="num">' + f.dias + '</td><td>' + esc(f.estatus || '') + '</td><td>' + segControl('transf', clave) + '</td></tr>';
     }).join('');
     html += '<h3>Detalle por documento</h3>' + tablaHTML(
@@ -1314,14 +1412,14 @@ function renderBloq() {
     html += barrasHTML('Por Jerarquía 2', p.porJerarquia.map(function (x) { return { etiqueta: x.clave, valor: x.valor }; }), fmtDinero);
     var rows = p.porCentro.map(function (x) {
       var clave = 'bloq:centro:' + x.clave;
-      return '<tr><td>' + esc(x.clave) + '</td><td class="num">' + x.registros + '</td><td class="num">' + fmtNum(x.unidades, 3) + '</td><td class="num">' + fmtDinero(x.valor) + '</td><td>' + segControl('bloq', clave) + '</td></tr>';
+      return '<tr><td>' + esc(x.clave) + ' ' + esc(nombreTienda(x.clave)) + '</td><td class="num">' + x.registros + '</td><td class="num">' + fmtNum(x.unidades, 3) + '</td><td class="num">' + fmtDinero(x.valor) + '</td><td>' + segControl('bloq', clave) + '</td></tr>';
     }).join('');
     html += '<h3>Detalle por centro</h3>' + tablaHTML(
       [{ t: 'Centro' }, { t: 'Registros', num: true }, { t: 'Unidades', num: true }, { t: 'Importe', num: true }, { t: 'Seguimiento' }],
       rows, '<td>Total</td><td class="num">' + p.registros + '</td><td class="num">' + fmtNum(p.unidades, 3) + '</td><td class="num">' + fmtDinero(p.total) + '</td><td></td>');
     var topRows = p.top.map(function (f) {
       var clave = 'bloq:' + f.centro + ':' + f.material;
-      return '<tr><td>' + esc(f.centro) + '</td><td>' + esc(f.material) + '</td><td>' + esc(f.denom) + '</td><td>' + esc(f.jerarquia) + '</td><td class="num">' + fmtNum(f.bloqueado, 3) + '</td><td class="num">' + fmtDinero(f.valor) + '</td><td>' + segControl('bloq', clave) + '</td></tr>';
+      return '<tr><td>' + esc(f.centro) + ' ' + esc(nombreTienda(f.centro)) + '</td><td>' + esc(f.material) + '</td><td>' + esc(f.denom) + '</td><td>' + esc(f.jerarquia) + '</td><td class="num">' + fmtNum(f.bloqueado, 3) + '</td><td class="num">' + fmtDinero(f.valor) + '</td><td>' + segControl('bloq', clave) + '</td></tr>';
     }).join('');
     html += '<h3>Artículos más críticos</h3>' + tablaHTML(
       [{ t: 'Centro' }, { t: 'Material' }, { t: 'Denominación' }, { t: 'Jerarquía' }, { t: 'Bloqueado', num: true }, { t: 'Valor', num: true }, { t: 'Seguimiento' }], topRows, '');
@@ -1343,7 +1441,7 @@ function renderBloq() {
       rows2, '<td>Total</td><td class="num">' + q.registros + '</td><td class="num">' + fmtDinero(q.neto) + '</td><td class="num">' + fmtDinero(q.impacto) + '</td><td></td>');
     var topRows2 = q.top.map(function (f) {
       var clave = 'bloq:' + f.centro + ':' + f.material;
-      return '<tr><td>' + esc(f.centro) + '</td><td>' + esc(f.material) + '</td><td>' + esc(f.descripcion) + '</td><td>' + esc(f.departamento) + '</td><td class="num">' + fmtNum(f.stockBloq, 2) + '</td><td class="num">' + fmtDinero(f.importe) + '</td><td>' + segControl('bloq', clave) + '</td></tr>';
+      return '<tr><td>' + esc(f.centro) + ' ' + esc(nombreTienda(f.centro)) + '</td><td>' + esc(f.material) + '</td><td>' + esc(f.descripcion) + '</td><td>' + esc(f.departamento) + '</td><td class="num">' + fmtNum(f.stockBloq, 2) + '</td><td class="num">' + fmtDinero(f.importe) + '</td><td>' + segControl('bloq', clave) + '</td></tr>';
     }).join('');
     html += '<h3>Artículos más críticos</h3>' + tablaHTML(
       [{ t: 'Centro' }, { t: 'Material' }, { t: 'Descripción' }, { t: 'Departamento' }, { t: 'Stock bloq.', num: true }, { t: 'Importe', num: true }, { t: 'Seguimiento' }], topRows2, '');
@@ -1357,22 +1455,33 @@ var rotFiltro = 'todas';
 
 function tablaRotativos(rows) {
   var html = rows.map(function (x) {
-    var clave = 'rot:' + x.semana + ':' + x.suc;
-    return '<tr><td>' + esc(x.etiqueta) + '</td><td>' + esc(x.suc) + '</td>' +
+    return '<tr><td>' + esc(x.etiqueta) + '</td><td>' + esc(x.suc) + ' ' + esc(nombreTienda(x.suc)) + '</td>' +
       '<td class="num">' + x.articulos + '</td><td class="num">' + x.meta + '</td>' +
       '<td class="num">' + Math.round(x.cumplimiento) + '%</td>' +
       '<td class="num">' + x.conteos + '</td>' +
       '<td class="num">' + fmtNum(x.difu) + '</td><td class="num">' + fmtDinero(x.difp) + '</td>' +
       '<td class="num">' + x.conDif + '</td>' +
       '<td class="num">' + (x.articulos ? x.exactitud.toFixed(1) + '%' : '—') + '</td>' +
-      '<td><span class="nivel ' + (x.estatus === 'Cumplido' ? 'controlado' : 'seguimiento') + '">' + x.estatus + '</span></td>' +
-      '<td>' + segControl('rot', clave) + '</td></tr>';
+      '<td><span class="nivel ' + (x.estatus === 'Cumplido' ? 'controlado' : 'seguimiento') + '">' + x.estatus + '</span></td></tr>';
   }).join('');
   return tablaHTML(
     [{ t: 'Semana' }, { t: 'Sucursal' }, { t: 'Artículos', num: true }, { t: 'Meta', num: true }, { t: '% cumpl.', num: true },
      { t: 'Conteos', num: true }, { t: 'DIFU', num: true }, { t: 'DIFP', num: true }, { t: 'Art. con dif.', num: true },
-     { t: 'Exactitud', num: true }, { t: 'Estatus' }, { t: 'Seguimiento' }],
+     { t: 'Exactitud', num: true }, { t: 'Estatus' }],
     html, '');
+}
+
+function tablaTopDiferencias(titulo, filasTop) {
+  if (!filasTop.length) return '<h3>' + esc(titulo) + '</h3><p class="hint">Sin renglones en este corte.</p>';
+  var rows = filasTop.map(function (f) {
+    return '<tr><td>' + esc(f.suc) + ' ' + esc(nombreTienda(f.suc)) + '</td>' +
+      '<td>' + esc(f.articulo) + '</td><td>' + esc(f.descripcion) + '</td>' +
+      '<td class="num">' + fmtNum(f.teo) + '</td><td class="num">' + fmtNum(f.fis) + '</td>' +
+      '<td class="num">' + fmtNum(f.difu) + '</td><td class="num">' + fmtDifp(f.difp) + '</td></tr>';
+  }).join('');
+  return '<h3>' + esc(titulo) + '</h3>' + tablaHTML(
+    [{ t: 'Sucursal' }, { t: 'Artículo' }, { t: 'Descripción' }, { t: 'TEO', num: true }, { t: 'FIS', num: true }, { t: 'Dif. pzas', num: true }, { t: 'Dif. $', num: true }],
+    rows, '');
 }
 
 function renderRotDetalle(carga, filtro) {
@@ -1384,7 +1493,7 @@ function renderRotDetalle(carga, filtro) {
   });
   if (filtro && filtro !== 'todas') filas = filas.filter(function (f) { return f.suc === filtro; });
   var rows = filas.map(function (f) {
-    return '<tr><td>' + esc(f.suc) + '</td><td>' + fmtFecha(f.fecha) + '</td><td>' + esc(f.rol) + '</td>' +
+    return '<tr><td>' + esc(f.suc) + ' ' + esc(nombreTienda(f.suc)) + '</td><td>' + fmtFecha(f.fecha) + '</td><td>' + esc(f.rol) + '</td>' +
       '<td>' + esc(f.articulo) + '</td><td>' + esc(f.descripcion) + '</td>' +
       '<td class="num">' + fmtNum(f.teo) + '</td><td class="num">' + fmtNum(f.fis) + '</td>' +
       '<td class="num">' + fmtNum(f.difu) + '</td><td class="num">' + fmtDinero(f.difp) + '</td></tr>';
@@ -1400,16 +1509,18 @@ function renderRotativos() {
   var el = $('rot-panel'), info = $('rot-corte');
   if (!c) { info.textContent = ''; resumenes.rot = ''; el.innerHTML = '<p class="vacio">Aún no hay rotativos cargados. Sube el archivo de rotativos arriba.</p>'; return; }
   var p = computeRotativos(c.filas);
+  var multi = computeRotativosMulti(cortesDe('rot'));
+  var top = computeTopDiferencias(c.filas);
   info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · ' + p.totalArticulos + ' artículos en ' + p.totalConteos + ' conteos · Semana de jueves a miércoles';
   var html = '';
-  if (p.semanas.length) {
-    var ult = p.semanas[0];
-    var ultRows = p.filas.filter(function (x) { return x.semana === ult; });
+  if (multi.semanas.length) {
+    var ult = multi.semanas[0];
+    var ultRows = multi.filas.filter(function (x) { return x.semana === ult; });
     html += '<h3>Última semana: ' + esc(etiquetaSemana(ult)) + '</h3><div class="totales">';
     ultRows.forEach(function (x) {
-      var color = x.cumplimiento >= 100 ? '#12a150' : x.cumplimiento >= 50 ? '#f79009' : '#d92d20';
+      var color = x.cumplimiento >= 100 ? '#1d4ed8' : x.cumplimiento >= 50 ? '#f97316' : '#ea580c';
       html += '<div class="total-card' + (x.cumplimiento >= 100 ? ' destacado' : '') + '">' +
-        '<div class="etiqueta">Sucursal ' + esc(x.suc) + '</div>' +
+        '<div class="etiqueta">' + esc(x.suc) + ' ' + esc(nombreTienda(x.suc)) + '</div>' +
         '<div class="valor">' + Math.round(x.cumplimiento) + '%</div>' +
         '<div class="barra-fila"><span class="btrack"><span class="bfill" style="display:block;width:' + Math.round(x.cumplimiento) + '%;background:' + color + '"></span></span></div>' +
         '<div class="sub">' + x.articulos + ' / ' + x.meta + ' artículos · ' + x.conteos + ' conteos</div>' +
@@ -1418,23 +1529,22 @@ function renderRotativos() {
     });
     html += '</div>';
   }
-  html += '<h3>Productividad semanal por sucursal</h3>' + tablaRotativos(p.filas);
-  var cortes = cortesDe('rot');
-  if (cortes.length > 1) {
-    var todas = [];
-    cortes.forEach(function (cc) { todas = todas.concat(cc.filas); });
-    var acum = computeRotativos(todas);
-    html += '<h3>Acumulado de todos los cortes</h3><p class="hint">Suma los renglones de todos los cortes guardados. Si subiste el mismo archivo dos veces, se duplica: borra el corte repetido en Cargas.</p>' + tablaRotativos(acum.filas);
-  }
+  html += '<h3>Mayores diferencias en $</h3>';
+  html += tablaTopDiferencias('Faltantes — Top 10', top.faltantesDinero);
+  html += tablaTopDiferencias('Sobrantes — Top 10', top.sobrantesDinero);
+  html += '<h3>Mayores diferencias en piezas</h3>';
+  html += tablaTopDiferencias('Faltantes — Top 10', top.faltantesPiezas);
+  html += tablaTopDiferencias('Sobrantes — Top 10', top.sobrantesPiezas);
   var opts = ['<option value="todas">Todas las sucursales</option>'].concat(ROT_SUC.map(function (s) {
-    return '<option value="' + s + '"' + (rotFiltro === s ? ' selected' : '') + '>Sucursal ' + s + '</option>';
+    return '<option value="' + s + '"' + (rotFiltro === s ? ' selected' : '') + '>' + s + ' ' + esc(nombreTienda(s)) + '</option>';
   })).join('');
   html += '<h3>Detalle por artículo</h3><label class="hint">Filtrar por sucursal: <select id="rot-filtro">' + opts + '</select></label><div id="rot-detalle"></div>';
+  html += '<h3>Productividad semanal por sucursal</h3>' + tablaRotativos(multi.filas);
   el.innerHTML = html;
   var sel = $('rot-filtro');
   if (sel) sel.addEventListener('change', function () { rotFiltro = sel.value; renderRotDetalle(c, rotFiltro); });
   renderRotDetalle(c, rotFiltro);
-  resumenes.rot = resumenRotTexto(c);
+  resumenes.rot = resumenRotTexto(c, multi.filas);
   el.insertAdjacentHTML('beforeend', resumenBoxHTML('rot', resumenes.rot));
 }
 
@@ -1505,7 +1615,7 @@ function resumenPendiente(p) {
   if (p.tipo === 'rot') {
     var roles = {};
     p.filas.forEach(function (f) { if (f.rol) roles[f.rol] = 1; });
-    return p.filas.length + ' artículos · ' + Object.keys(roles).length + ' conteos · sucursales 127, 331, 333, 334 y 1060';
+    return p.filas.length + ' artículos · ' + Object.keys(roles).length + ' conteos · sucursales 127, 331, 333, 334, 336 y 1060';
   }
   if (p.tipo === 'merma') return 'Total: ' + fmtDinero(p.filas.reduce(function (a, f) { return a + f.costoTotal; }, 0)) + ' · ' + p.filas.length + ' registros';
   if (p.tipo === 'transf' && p.formato === 'destino') {
@@ -1602,7 +1712,7 @@ function exportar(tipo) {
     if (t === 'bloq' && c.formato !== 'concentrado') totalTxt = fmtDinero(computeBloqOrig(c.filas).impacto) + ' impacto';
     if (t === 'rot') { var rp = computeRotativos(c.filas); totalTxt = fmtNum(rp.totalArticulos) + ' artículos · ' + rp.totalConteos + ' conteos'; }
     resumen.push([etiqueta, c.fechaCorte, totalTxt, c.filas.length]);
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(panelAOA(t, c)), 'Panel ' + etiqueta);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(panelAOA(t, c, t === 'rot' ? cortesDe('rot') : null)), 'Panel ' + etiqueta);
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detalleJSON(t, c)), 'Detallado ' + etiqueta);
   });
   if (!hubo) { toast('No hay datos cargados para exportar.'); return; }
