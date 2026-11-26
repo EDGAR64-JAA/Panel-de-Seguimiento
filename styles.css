@@ -107,6 +107,7 @@ main { max-width: 960px; margin: 0 auto; padding: 12px 12px 24px; }
 .total-card.destacado { background: linear-gradient(135deg, #1e40af, #1d4ed8); border-color: #1e40af; }
 .total-card.destacado .etiqueta, .total-card.destacado .sub { color: #dbeafe; }
 .total-card.destacado .valor { color: #fff; }
+#tab-rot .total-card.semana-blanca { background: #fff; border-color: #d5e2ee; }
 .variacion { font-size: 13px; font-weight: 700; margin-top: 2px; }
 .variacion.baja { color: #1d4ed8; }
 .variacion.sube { color: #ea580c; }
@@ -141,6 +142,7 @@ tr.total-row td { font-weight: 800; background: #f4f8fc; }
 .nivel.seguimiento { background: #f97316; }
 .nivel.controlado { background: #1d4ed8; }
 .nivel.liberado { background: #1d4ed8; }
+.nivel.neutro { background: #eef2f6; color: #172b3a; }
 select.estado { font-size: 13px; padding: 4px; border: 1px solid #c3d2e0; border-radius: 6px; max-width: 130px; }
 input.nota { font-size: 13px; padding: 5px; border: 1px solid #c3d2e0; border-radius: 6px; width: 130px; }
 
@@ -149,17 +151,6 @@ input.nota { font-size: 13px; padding: 5px; border: 1px solid #c3d2e0; border-ra
 .carga h3 { margin: 0 0 4px; font-size: 15px; }
 .carga p { margin: 2px 0; font-size: 13px; color: #33475c; }
 .carga .acciones { margin-top: 8px; }
-
-/* Exportar */
-.export-btns { display: flex; gap: 8px; flex-wrap: wrap; }
-
-/* Resumen para correo */
-.resumen-box { margin-top: 14px; border: 1px solid #d5e2ee; border-radius: 10px; padding: 12px; background: #fbfdff; }
-.resumen-box h3 { font-size: 15px; margin: 0 0 8px; color: #1d4ed8; }
-.resumen-preview { white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 13px; line-height: 1.5; background: #f4f8fc; border: 1px solid #e3e9ef; border-radius: 8px; padding: 10px; margin: 0 0 10px; }
-#tab-merma .resumen-box, #tab-transf .resumen-box, #tab-bloq .resumen-box, #tab-rot .resumen-box { border-top: 3px solid #f97316; }
-#seccion-exportar .resumen-box { border-top: 3px solid #1d4ed8; }
-#resumen-completo-preview { margin-top: 12px; }
 
 /* Toast */
 .toast {

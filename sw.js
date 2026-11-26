@@ -1,5 +1,5 @@
 /* Service worker — Panel de Seguimiento (caché para uso sin conexión) */
-var CACHE = 'panel-seguimiento-v4'; /* subir versión cuando cambien app.js/styles.css para que las instalaciones existentes actualicen */
+var CACHE = 'panel-seguimiento-v5'; /* subir versión cuando cambien app.js/styles.css para que las instalaciones existentes actualicen */
 var ARCHIVOS = [
   './',
   './index.html',

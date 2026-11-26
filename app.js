@@ -689,358 +689,12 @@ function computeRotativosMulti(cortes) {
 }
 
 /* Sección fuera de política para la hoja Panel de la exportación de transferencias. */
-function fueraPoliticaAOA(L, fp) {
-  L.push(['FUERA DE POLÍTICA (más de 3 días)']);
-  L.push(['Documentos fuera de política', fp.documentos,
-    'Piezas pendientes', fp.tienePiezas ? fp.piezas : '',
-    'Importe fuera de política', fp.tieneImporte ? fp.importe : '']);
-  L.push([]);
-  L.push(['POR SUCURSAL DESTINO (fuera de política)']);
-  var hd = ['Destino', 'Nombre', 'Documentos'];
-  if (fp.tienePiezas) hd.push('Piezas pendientes');
-  if (fp.tieneImporte) hd.push('Importe');
-  L.push(hd);
-  fp.porDestino.forEach(function (x) {
-    var r = [x.clave, x.nombre, x.docs];
-    if (fp.tienePiezas) r.push(x.piezas);
-    if (fp.tieneImporte) r.push(x.importe);
-    L.push(r);
-  });
-  L.push([]);
-  L.push(['DETALLE DE DOCUMENTOS FUERA DE POLÍTICA (del más antiguo al más reciente)']);
-  var hd2 = ['Documento', 'Fecha embarque', 'Origen', 'Destino', 'Días'];
-  if (fp.tienePiezas) hd2.push('Piezas pendientes');
-  if (fp.tieneImporte) hd2.push('Importe');
-  L.push(hd2);
-  fp.detalle.forEach(function (x) {
-    var r = [x.doc, x.fechaEmb, x.origen + ' ' + nombreTienda(x.origen, x.origenDesc), x.destino + ' ' + nombreTienda(x.destino, x.destinoDesc), x.dias];
-    if (fp.tienePiezas) r.push(x.piezas);
-    if (fp.tieneImporte) r.push(x.importe);
-    L.push(r);
-  });
-  L.push([]);
-}
-
-function topDifAOA(L, titulo, filasTop) {
-  L.push([titulo]);
-  L.push(['Sucursal', 'Artículo', 'Descripción', 'TEO', 'FIS', 'Dif. pzas', 'Dif. $']);
-  filasTop.forEach(function (f) {
-    L.push([f.suc + ' ' + nombreTienda(f.suc), f.articulo, f.descripcion, f.teo, f.fis, f.difu, f.difp]);
-  });
-  L.push([]);
-}
-
-function panelAOA(tipo, carga, cortesRot) {
-  var L = [];
-  if (tipo === 'rot') {
-    var rp = computeRotativos(carga.filas);
-    var top = computeTopDiferencias(carga.filas);
-    var sem = (cortesRot && cortesRot.length) ? computeRotativosMulti(cortesRot) : rp;
-    L.push(['ROTATIVOS — PRODUCTIVIDAD DE CONTEOS (semana de jueves a miércoles)']);
-    L.push(['Corte', carga.fechaCorte, 'Archivo', carga.nombre]);
-    L.push(['Artículos totales', rp.totalArticulos, 'Conteos', rp.totalConteos, 'Semanas', sem.semanas.length]);
-    L.push([]);
-    topDifAOA(L, 'MAYORES DIFERENCIAS EN $ — FALTANTES (Top 10)', top.faltantesDinero);
-    topDifAOA(L, 'MAYORES DIFERENCIAS EN $ — SOBRANTES (Top 10)', top.sobrantesDinero);
-    topDifAOA(L, 'MAYORES DIFERENCIAS EN PIEZAS — FALTANTES (Top 10)', top.faltantesPiezas);
-    topDifAOA(L, 'MAYORES DIFERENCIAS EN PIEZAS — SOBRANTES (Top 10)', top.sobrantesPiezas);
-    L.push(['PRODUCTIVIDAD SEMANAL POR SUCURSAL']);
-    L.push(['Semana', 'Sucursal', 'Artículos', 'Meta', '% cumplimiento', 'Conteos', 'DIFU', 'DIFP', 'Art. con diferencia', 'Exactitud', 'Estatus']);
-    sem.filas.forEach(function (x) { L.push([x.etiqueta, x.suc + ' ' + nombreTienda(x.suc), x.articulos, x.meta, x.cumplimiento / 100, x.conteos, x.difu, x.difp, x.conDif, x.exactitud / 100, x.estatus]); });
-    return L;
-  }
-  if (tipo === 'merma') {
-    var p = computeMerma(carga.filas, carga.fechaCorte);
-    L.push(['MERMA PENDIENTE DE LIBERAR', '', '', '', '', '', '', '']);
-    L.push(['Corte', carga.fechaCorte, 'Archivo', carga.nombre]);
-    L.push(['Monto total pendiente', p.total, 'Registros', p.registros]);
-    L.push([]);
-    L.push(['DISTRIBUCIÓN POR ANTIGÜEDAD']);
-    L.push(['Rango (días)', 'Registros', 'Monto']);
-    RANGOS.forEach(function (r) { L.push([r, p.antiguedad[r].n, p.antiguedad[r].monto]); });
-    L.push([]);
-    L.push(['DETALLE POR SUCURSAL']);
-    L.push(['Sucursal', 'Monto pendiente', '% total', 'Registros', 'Entrada más antigua', 'Días', 'Nivel', 'Acción']);
-    p.porCentro.forEach(function (x) { L.push([x.centro + ' ' + nombreTienda(x.centro), x.monto, x.pct / 100, x.registros, x.entradaMasAntigua, x.dias, x.nivel, x.accion]); });
-    L.push(['TOTAL', p.total, 1, p.registros, '', '', '', '']);
-  } else if (tipo === 'transf') {
-    if (carga.formato === 'detallado') {
-      var dd = computeTransfDetallado(carga.filas);
-      L.push(['TRANSFERENCIAS PENDIENTES (DETALLADO)']);
-      L.push(['Corte', carga.fechaCorte, 'Archivo', carga.nombre]);
-      L.push(['Importe total', dd.importeTotal, 'Documentos', dd.documentos, 'Piezas embarcadas', dd.piezasEmb, 'Piezas pendientes', dd.piezasPend]);
-      L.push([]);
-      fueraPoliticaAOA(L, fueraPoliticaTransf(carga));
-      L.push(['ANTIGÜEDAD']);
-      L.push(['Rango (días)', 'Documentos', 'Importe', 'Piezas']);
-      RANGOS.forEach(function (r) { L.push([r, dd.antiguedad[r].n, dd.antiguedad[r].monto, dd.antiguedad[r].piezas]); });
-      L.push([]);
-      L.push(['POR SUCURSAL ORIGEN']);
-      L.push(['Origen', 'Nombre', 'Documentos', 'Importe', 'Piezas pendientes']);
-      dd.porOrigen.forEach(function (x) { L.push([x.clave, x.nombre, x.docs, x.importe, x.piezas]); });
-      L.push([]);
-      L.push(['POR SUCURSAL DESTINO']);
-      L.push(['Destino', 'Nombre', 'Documentos', 'Importe', 'Piezas pendientes']);
-      dd.porDestino.forEach(function (x) { L.push([x.clave, x.nombre, x.docs, x.importe, x.piezas]); });
-      L.push([]);
-      L.push(['TOP ARTÍCULOS']);
-      L.push(['Artículo', 'Texto', 'Documento', 'Costo', 'Piezas pendientes', 'Días']);
-      dd.topArticulos.forEach(function (f) { L.push([f.articulo, f.texto, f.doc, f.costo, f.piezasPend, f.dias]); });
-    } else if (carga.formato === 'destino') {
-      var q = computeTransfDestino(carga.filas);
-      L.push(['TRANSFERENCIAS PENDIENTES (DESTINO)']);
-      L.push(['Corte', carga.fechaCorte, 'Archivo', carga.nombre]);
-      L.push(['Documentos', q.documentos, 'Piezas embarcadas', q.piezasEmb, 'Piezas pendientes', q.piezasPend, 'Importe', q.costoTotal]);
-      L.push([]);
-      fueraPoliticaAOA(L, fueraPoliticaTransf(carga));
-      L.push(['ANTIGÜEDAD (piezas pendientes)']);
-      L.push(['Rango (días)', 'Documentos', 'Piezas']);
-      RANGOS.forEach(function (r) { L.push([r, q.antiguedad[r].n, q.antiguedad[r].piezas]); });
-      L.push([]);
-      L.push(['POR SUCURSAL ORIGEN']);
-      L.push(['Origen', 'Nombre', 'Documentos', 'Piezas pendientes']);
-      q.porOrigen.forEach(function (x) { L.push([x.clave, x.nombre, x.docs, x.piezas]); });
-      L.push([]);
-      L.push(['POR SUCURSAL DESTINO']);
-      L.push(['Destino', 'Nombre', 'Documentos', 'Piezas pendientes']);
-      q.porDestino.forEach(function (x) { L.push([x.clave, x.nombre, x.docs, x.piezas]); });
-    } else {
-      var s = computeTransfSAP(carga.filas);
-      L.push(['TRANSFERENCIAS PENDIENTES (SAP)']);
-      L.push(['Corte', carga.fechaCorte, 'Archivo', carga.nombre]);
-      L.push(['Importe total', s.importeTotal, 'Documentos', s.documentos]);
-      L.push([]);
-      fueraPoliticaAOA(L, fueraPoliticaTransf(carga));
-      L.push(['ANTIGÜEDAD']);
-      L.push(['Rango (días)', 'Documentos', 'Importe']);
-      RANGOS.forEach(function (r) { L.push([r, s.antiguedad[r].n, s.antiguedad[r].monto]); });
-      L.push([]);
-      L.push(['POR SUCURSAL ORIGEN']);
-      L.push(['Origen', 'Nombre', 'Documentos', 'Importe']);
-      s.porOrigen.forEach(function (x) { L.push([x.clave, x.nombre, x.docs, x.importe]); });
-    }
-  } else {
-    if (carga.formato === 'concentrado') {
-      var b = computeBloqConc(carga.filas, carga.resumenHoja);
-      L.push(['STOCK BLOQUEADO (CONCENTRADO)']);
-      L.push(['Corte', carga.fechaCorte, 'Archivo', carga.nombre]);
-      L.push(['Importe bloqueado', b.total, 'Registros', b.registros, 'Unidades', b.unidades]);
-      L.push([]);
-      L.push(['POR CENTRO']);
-      L.push(['Centro', 'Registros', 'Unidades', 'Importe']);
-      b.porCentro.forEach(function (x) { L.push([x.clave + ' ' + nombreTienda(x.clave), x.registros, x.unidades, x.valor]); });
-      L.push([]);
-      L.push(['POR JERARQUÍA 2']);
-      L.push(['Jerarquía', 'Registros', 'Importe']);
-      b.porJerarquia.forEach(function (x) { L.push([x.clave, x.registros, x.valor]); });
-      L.push([]);
-      L.push(['TOP ARTÍCULOS']);
-      L.push(['Centro', 'Material', 'Denominación', 'Jerarquía', 'Bloqueado', 'Valor']);
-      b.top.forEach(function (f) { L.push([f.centro, f.material, f.denom, f.jerarquia, f.bloqueado, f.valor]); });
-    } else {
-      var o = computeBloqOrig(carga.filas);
-      L.push(['STOCK BLOQUEADO']);
-      L.push(['Corte', carga.fechaCorte, 'Archivo', carga.nombre]);
-      L.push(['Impacto absoluto', o.impacto, 'Importe neto', o.neto, 'Registros', o.registros]);
-      L.push([]);
-      L.push(['POR SUCURSAL']);
-      L.push(['Centro', 'Sucursal', 'Registros', 'Importe neto', 'Impacto']);
-      o.porSucursal.forEach(function (x) { L.push([x.clave, x.nombre, x.registros, x.importe, x.impacto]); });
-      L.push([]);
-      L.push(['POR DEPARTAMENTO']);
-      L.push(['Departamento', 'Registros', 'Importe']);
-      o.porDepartamento.forEach(function (x) { L.push([x.clave, x.registros, x.importe]); });
-      L.push([]);
-      L.push(['TOP ARTÍCULOS']);
-      L.push(['Centro', 'Material', 'Descripción', 'Departamento', 'Stock bloq.', 'Importe']);
-      o.top.forEach(function (f) { L.push([f.centro, f.material, f.descripcion, f.departamento, f.stockBloq, f.importe]); });
-    }
-  }
-  return L;
-}
-function detalleJSON(tipo, carga) {
-  if (tipo === 'rot') return carga.filas.map(function (f) {
-    return { 'Sucursal': f.suc + ' ' + nombreTienda(f.suc), 'Fecha': f.fecha, 'ROL': f.rol, 'Artículo': f.articulo, 'Descripción': f.descripcion,
-      'TEO': f.teo, 'FIS': f.fis, 'DIFU': f.difu, 'DIFP': f.difp };
-  });
-  if (tipo === 'merma') return carga.filas.map(function (f) {
-    return { 'Centro': f.centro, 'Fecha de entrada': f.fechaEntrada, 'Documento material': f.docMaterial, 'Material': f.material,
-      'Texto breve material': f.texto, 'Ctd.en UM entrada': f.cantidad, 'Costo Unitario': f.costoUnit, 'Costo Total': f.costoTotal, 'Usuario': f.usuario };
-  });
-  if (tipo === 'transf' && carga.formato === 'detallado') return carga.filas.map(function (f) {
-    return { 'Doc.Interno': f.doc, 'Fecha Embarque': f.fechaEmb, 'Tda.Origen': f.origen, 'Descripción origen': f.origenDesc,
-      'Articulo': f.articulo, 'Destino': f.destino, 'Descripción destino': f.destinoDesc, 'Texto': f.texto,
-      'Costo': f.costo, 'Piezas Embarcadas': f.piezasEmb, 'Piezas Recibidas': f.piezasRec,
-      'Piezas Pendientes': f.piezasPend, 'Dias Transcurridos': f.dias };
-  });
-  if (tipo === 'transf' && carga.formato === 'destino') return carga.filas.map(function (f) {
-    return { 'Doc.Interno': f.doc, 'Fecha Embarque': f.fechaEmb, 'Tda.Origen': f.origen, 'Descripción origen': f.origenDesc,
-      'Destino': f.destino, 'Descripción destino': f.destinoDesc, 'Piezas Embarcadas': f.piezasEmb, 'Piezas Recibidas': f.piezasRec,
-      'Dif. Final': f.difFinal, 'Costo Total': f.costoTotal, 'Dias Transcurridos': f.dias };
-  });
-  if (tipo === 'transf') return carga.filas.map(function (f) {
-    return { 'Documento': f.doc, 'Fecha contable': f.fechaCont, 'Sucursal origen': f.origen, 'Descripción origen': f.origenDesc,
-      'Sucursal destino': f.destino, 'Descripción destino': f.destinoDesc, 'Importe': f.importe, 'Días transcurridos': f.dias, 'Estatus': f.estatus };
-  });
-  if (carga.formato === 'concentrado') return carga.filas.map(function (f) {
-    return { 'Centro': f.centro, 'Material': f.material, 'EAN/UPC': f.ean, 'Denomin.': f.denom, 'Unidad': f.unidad,
-      'Jerarquía 2': f.jerarquia, 'Almacén': f.almacen, 'Bloqueado': f.bloqueado, 'V. Stock bloq.': f.valor };
-  });
-  return carga.filas.map(function (f) {
-    return { 'Zona': f.zona, 'Material': f.material, 'Centro': f.centro, 'Sucursal': f.sucursal, 'Almacén': f.almacen,
-      'Libre Util': f.libreUtil, 'Stock Bloq': f.stockBloq, 'Cto': f.cto, 'Importe': f.importe, 'Formato': f.formato,
-      'Descripción': f.descripcion, 'Departamento': f.departamento, 'Clase': f.clase };
-  });
-}
-/* ---- resúmenes en texto plano para correo ---- */
-/* Negativo como "-$6,593.28", positivo como "$39,996.46" (formato de sus correos). */
-function fmtDineroSigno(v) {
-  v = num(v);
-  return (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
 /* DIFP con signo explícito: "-$14,045.24", "+$7,466.10", "$0.00". */
 function fmtDifp(v) {
   v = num(v);
   var signo = v < 0 ? '-$' : v > 0 ? '+$' : '$';
   return signo + Math.abs(v).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
-function lineaVariacion(actual, anterior) {
-  if (anterior === null || anterior === undefined) return '';
-  var dif = actual - anterior;
-  if (Math.abs(dif) < 0.005) return ' (sin cambio vs corte anterior)';
-  var pct = anterior ? (dif / Math.abs(anterior) * 100) : 0;
-  return ' (' + (dif < 0 ? '▼' : '▲') + ' ' + fmtDinero(Math.abs(dif)) + ', ' + Math.abs(pct).toFixed(1) + '% vs corte anterior)';
-}
-function resumenMermaTexto(carga, totalAnterior) {
-  var p = computeMerma(carga.filas, carga.fechaCorte);
-  var L = [];
-  L.push('Merma Pendiente de Liberar');
-  L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · ' + p.registros + ' registros');
-  L.push('MONTO PENDIENTE: ' + fmtDinero(p.total) + lineaVariacion(p.total, totalAnterior));
-  L.push('REGISTROS: ' + p.registros + ' · SUCURSALES: ' + p.porCentro.length + ' · CRÍTICOS: ' + p.porCentro.filter(function (x) { return x.nivel === 'CRITICO'; }).length);
-  var dist = RANGOS.map(function (r) {
-    var v = p.antiguedad[r];
-    var pct = p.total ? (v.monto / p.total * 100) : 0;
-    return r + ' días: ' + fmtDinero(v.monto) + ' (' + pct.toFixed(1) + '%)';
-  }).join(' · ');
-  L.push('Distribución por antigüedad: ' + dist);
-  L.push('Detalle por sucursal:');
-  p.porCentro.forEach(function (x) {
-    L.push('  ' + nombreTienda(x.centro) + ': ' + fmtDinero(x.monto) + ' · ' + x.registros + ' registros · ' + x.nivel);
-  });
-  return L.join('\n');
-}
-function resumenBloqTexto(carga) {
-  var L = [];
-  L.push('Stock Bloqueado');
-  L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · Formato: ' + (carga.formato === 'concentrado' ? 'Concentrado' : 'Bloq original'));
-  if (carga.formato === 'concentrado') {
-    var p = computeBloqConc(carga.filas, carga.resumenHoja);
-    L.push('IMPORTE BLOQUEADO: ' + fmtDinero(p.total) + ' · REGISTROS: ' + p.registros + ' · UNIDADES BLOQUEADAS: ' + fmtNum(p.unidades, 3) + ' · CENTROS: ' + p.porCentro.length);
-    L.push('Importe por centro: ' + p.porCentro.map(function (x) { return nombreTienda(x.clave) + ' ' + fmtDineroSigno(x.valor); }).join(' · '));
-    L.push('Por Jerarquía 2: ' + p.porJerarquia.map(function (x) { return x.clave + ' ' + fmtDineroSigno(x.valor); }).join(' · '));
-  } else {
-    var q = computeBloqOrig(carga.filas);
-    L.push('IMPACTO ABSOLUTO: ' + fmtDinero(q.impacto) + ' · IMPORTE NETO: ' + fmtDinero(q.neto) + ' · REGISTROS: ' + q.registros + ' · STOCK +: ' + fmtNum(q.stockPos, 1) + ' / STOCK -: ' + fmtNum(q.stockNeg, 1));
-    L.push('Impacto por sucursal: ' + q.porSucursal.map(function (x) { return nombreTienda(x.clave, x.nombre) + ' ' + fmtDineroSigno(x.impacto); }).join(' · '));
-    L.push('Por departamento: ' + q.porDepartamento.map(function (x) { return x.clave + ' ' + fmtDineroSigno(x.importe); }).join(' · '));
-  }
-  return L.join('\n');
-}
-/* Línea de fuera de política para el resumen de correo de transferencias. */
-function lineaFueraPolitica(fp) {
-  var t = 'FUERA DE POLÍTICA (>3 días): ' + fp.documentos + (fp.documentos === 1 ? ' documento' : ' documentos');
-  if (fp.tienePiezas) t += ' · ' + fmtNum(fp.piezas) + ' piezas';
-  if (fp.tieneImporte) t += ' · ' + fmtDinero(fp.importe);
-  if (fp.porDestino.length) {
-    t += '\nPor destino fuera de política: ' + fp.porDestino.map(function (x) {
-      var s = nombreTienda(x.clave, x.nombre) + ' ';
-      if (fp.tieneImporte) s += fmtDinero(x.importe);
-      if (fp.tienePiezas) s += (fp.tieneImporte ? ' ' : '') + fmtNum(x.piezas) + ' piezas';
-      s += ' (' + x.docs + (x.docs === 1 ? ' doc' : ' docs') + ')';
-      return s;
-    }).join(' · ');
-  }
-  return t;
-}
-function resumenTransfTexto(carga) {
-  var L = [];
-  var fp = fueraPoliticaTransf(carga);
-  L.push('Transferencias Pendientes');
-  if (carga.formato === 'detallado') {
-    var d = computeTransfDetallado(carga.filas);
-    L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · ' + d.documentos + ' documentos');
-    L.push('IMPORTE PENDIENTE: ' + fmtDinero(d.importeTotal) + ' · PIEZAS PENDIENTES: ' + fmtNum(d.piezasPend) + ' · RENGLONES: ' + d.registros);
-    L.push(lineaFueraPolitica(fp));
-    if (d.masAntiguo) L.push('Documento más antiguo: ' + nombreTienda(d.masAntiguo.origen, d.masAntiguo.origenDesc) + ' ' + fmtFecha(d.masAntiguo.fechaEmb) + ', ' + d.masAntiguo.dias + ' días, ' + fmtDinero(d.masAntiguo.importe) + ', ' + fmtNum(d.masAntiguo.piezasPend) + ' piezas');
-    L.push('Por origen: ' + d.porOrigen.map(function (x) { return nombreTienda(x.clave, x.nombre) + ' ' + fmtDinero(x.importe); }).join(' · '));
-    L.push('Por destino: ' + d.porDestino.map(function (x) { return nombreTienda(x.clave, x.nombre) + ' ' + fmtDinero(x.importe); }).join(' · '));
-  } else if (carga.formato === 'destino') {
-    var p = computeTransfDestino(carga.filas);
-    L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · ' + p.documentos + ' documentos');
-    L.push('PIEZAS EMBARCADAS: ' + fmtNum(p.piezasEmb) + ' · PIEZAS PENDIENTES: ' + fmtNum(p.piezasPend) + (p.costoTotal ? ' · IMPORTE: ' + fmtDinero(p.costoTotal) : ''));
-    L.push(lineaFueraPolitica(fp));
-    if (p.masAntiguo) L.push('Documento más antiguo: ' + nombreTienda(p.masAntiguo.origen, p.masAntiguo.origenDesc) + ' ' + fmtFecha(p.masAntiguo.fechaEmb) + ', ' + p.masAntiguo.dias + ' días, ' + fmtNum(p.masAntiguo.difFinal) + ' piezas');
-    L.push('Por origen: ' + p.porOrigen.map(function (x) { return nombreTienda(x.clave, x.nombre) + ' ' + fmtNum(x.piezas) + ' piezas'; }).join(' · '));
-    L.push('Por destino: ' + p.porDestino.map(function (x) { return nombreTienda(x.clave, x.nombre) + ' ' + fmtNum(x.piezas) + ' piezas'; }).join(' · '));
-  } else {
-    var q = computeTransfSAP(carga.filas);
-    L.push('Corte: ' + fmtFecha(carga.fechaCorte) + ' · Archivo: ' + carga.nombre + ' · ' + q.documentos + ' documentos');
-    L.push('IMPORTE PENDIENTE: ' + fmtDinero(q.importeTotal) + ' · DOCUMENTOS: ' + q.documentos);
-    L.push(lineaFueraPolitica(fp));
-    if (q.masAntiguo) L.push('Documento más antiguo: ' + nombreTienda(q.masAntiguo.origen, q.masAntiguo.origenDesc) + ' ' + fmtFecha(q.masAntiguo.fechaCont) + ', ' + q.masAntiguo.dias + ' días, ' + fmtDinero(q.masAntiguo.importe));
-    L.push('Por origen: ' + q.porOrigen.map(function (x) { return nombreTienda(x.clave, x.nombre) + ' ' + fmtDinero(x.importe); }).join(' · '));
-  }
-  return L.join('\n');
-}
-function lineaTopDif(f) {
-  return '  ' + f.suc + ' ' + nombreTienda(f.suc) + ' · Art. ' + f.articulo + ' ' + f.descripcion +
-    ' · TEO ' + fmtNum(f.teo) + ' · FIS ' + fmtNum(f.fis) + ' · DIFU ' + fmtNum(f.difu) + ' · DIFP ' + fmtDifp(f.difp);
-}
-function resumenRotTexto(carga, filasSemanales) {
-  var p = computeRotativos(carga.filas);
-  var top = computeTopDiferencias(carga.filas);
-  var sem = filasSemanales || p.filas;
-  var L = [];
-  L.push('Rotativos — Productividad de conteos');
-  var ultSem = p.semanas.length ? p.semanas[0] : null;
-  L.push('Semana: ' + (ultSem ? etiquetaSemana(ultSem).replace('Semana ', '') : '—') + ' · Archivo: ' + carga.nombre);
-  if (ultSem) {
-    p.filas.filter(function (x) { return x.semana === ultSem; }).forEach(function (x) {
-      L.push(nombreTienda(x.suc) + ': ' + x.articulos + ' artículos de ' + x.meta + ' (' + Math.round(x.cumplimiento) + '%) · ' + x.conteos + (x.conteos === 1 ? ' conteo' : ' conteos') + ' · DIFU ' + fmtNum(x.difu) + ' · DIFP ' + fmtDifp(x.difp));
-    });
-  }
-  L.push('MAYORES DIFERENCIAS EN $ — FALTANTES (Top 10):');
-  if (top.faltantesDinero.length) top.faltantesDinero.forEach(function (f) { L.push(lineaTopDif(f)); });
-  else L.push('  Sin faltantes en este corte.');
-  L.push('MAYORES DIFERENCIAS EN $ — SOBRANTES (Top 10):');
-  if (top.sobrantesDinero.length) top.sobrantesDinero.forEach(function (f) { L.push(lineaTopDif(f)); });
-  else L.push('  Sin sobrantes en este corte.');
-  L.push('MAYORES DIFERENCIAS EN PIEZAS — FALTANTES (Top 10):');
-  if (top.faltantesPiezas.length) top.faltantesPiezas.forEach(function (f) { L.push(lineaTopDif(f)); });
-  else L.push('  Sin faltantes en este corte.');
-  L.push('MAYORES DIFERENCIAS EN PIEZAS — SOBRANTES (Top 10):');
-  if (top.sobrantesPiezas.length) top.sobrantesPiezas.forEach(function (f) { L.push(lineaTopDif(f)); });
-  else L.push('  Sin sobrantes en este corte.');
-  L.push('PRODUCTIVIDAD SEMANAL POR SUCURSAL:');
-  if (sem.length) {
-    sem.forEach(function (x) {
-      L.push('  ' + x.etiqueta.replace('Semana ', '') + ' · ' + nombreTienda(x.suc) + ': ' + x.articulos + ' artículos de ' + x.meta + ' (' + Math.round(x.cumplimiento) + '%) · ' + x.conteos + (x.conteos === 1 ? ' conteo' : ' conteos') + ' · DIFU ' + fmtNum(x.difu) + ' · DIFP ' + fmtDifp(x.difp) + ' · Exactitud ' + (x.articulos ? x.exactitud.toFixed(1) + '%' : '—') + ' · ' + x.estatus);
-    });
-  } else L.push('  Sin semanas.');
-  return L.join('\n');
-}
-/* Recibe los TEXTOS ya armados {merma, transf, bloq, rot}; junta los que existan
-   con una línea en blanco entre ellos. */
-function resumenCompletoTexto(textos) {
-  var partes = [];
-  if (textos.merma) partes.push(textos.merma);
-  if (textos.transf) partes.push(textos.transf);
-  if (textos.bloq) partes.push(textos.bloq);
-  if (textos.rot) partes.push(textos.rot);
-  return partes.join('\n\n');
-}
-
 /* Exportación para Node (verificación) */
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
@@ -1056,11 +710,8 @@ if (typeof module !== 'undefined' && module.exports) {
     computeTopDiferencias: computeTopDiferencias, computeRotativosMulti: computeRotativosMulti,
     nombreTienda: nombreTienda, CATALOGO_TIENDAS: CATALOGO_TIENDAS,
     juevesDe: juevesDe, etiquetaSemana: etiquetaSemana,
-    panelAOA: panelAOA, detalleJSON: detalleJSON,
-    resumenMermaTexto: resumenMermaTexto, resumenBloqTexto: resumenBloqTexto,
-    resumenTransfTexto: resumenTransfTexto, resumenRotTexto: resumenRotTexto,
-    resumenCompletoTexto: resumenCompletoTexto, fmtDineroSigno: fmtDineroSigno, fmtDifp: fmtDifp,
-    fueraPoliticaTransf: fueraPoliticaTransf, lineaFueraPolitica: lineaFueraPolitica,
+    fmtDifp: fmtDifp,
+    fueraPoliticaTransf: fueraPoliticaTransf,
     POLITICA_DIAS_MAX: POLITICA_DIAS_MAX
   };
 }
@@ -1072,7 +723,6 @@ var state = { cargas: [], seguimiento: {} };
 var pendientes = [];
 var tabActual = 'merma';
 var soloFPTransf = false; /* filtro del detalle por artículo de transferencias: solo fuera de política */
-var resumenes = {}; /* textos listos para copiar, por reporte: {merma, transf, bloq, rot} */
 
 function cargarEstado() {
   try {
@@ -1184,50 +834,11 @@ function variacionHTML(actual, anterior, invertida) {
     ' (' + Math.abs(pct).toFixed(1) + '%) vs corte anterior</div>';
 }
 
-/* ---- resumen para correo (copiar al portapapeles) ---- */
-function copiarTexto(texto) {
-  function hecho() { toast('Resumen copiado'); }
-  function fallo() { toast('No se pudo copiar automáticamente. Selecciona el texto de la vista previa y cópialo manualmente.'); }
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(texto).then(hecho, function () { copiarFallback(texto, hecho, fallo); });
-  } else { copiarFallback(texto, hecho, fallo); }
-}
-function copiarFallback(texto, hecho, fallo) {
-  try {
-    var ta = document.createElement('textarea');
-    ta.value = texto;
-    ta.style.position = 'fixed'; ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    var ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    if (ok) hecho(); else fallo();
-  } catch (e) { fallo(); }
-}
-function resumenBoxHTML(tipo, texto) {
-  return '<div class="resumen-box"><h3>Resumen para correo</h3>' +
-    '<pre class="resumen-preview">' + esc(texto) + '</pre>' +
-    '<button class="btn" data-copiar="' + tipo + '" type="button">Copiar resumen para correo</button></div>';
-}
-function renderResumenCompleto() {
-  var el = $('resumen-completo-preview');
-  if (!el) return;
-  var txt = resumenCompletoTexto(resumenes);
-  var btn = document.querySelector('[data-copiar="completo"]');
-  if (!txt) {
-    el.innerHTML = '<p class="hint">Sube al menos un archivo para generar el resumen completo.</p>';
-    if (btn) btn.disabled = true;
-    return;
-  }
-  el.innerHTML = '<div class="resumen-box"><h3>Resumen completo para correo</h3><pre class="resumen-preview">' + esc(txt) + '</pre></div>';
-  if (btn) btn.disabled = false;
-}
-
 /* ---- render de paneles ---- */
 function renderMerma() {
   var c = ultimaCarga('merma');
   var el = $('merma-panel'), info = $('merma-corte');
-  if (!c) { info.textContent = ''; resumenes.merma = ''; el.innerHTML = '<p class="vacio">Aún no hay merma cargada. Sube el archivo de merma arriba.</p>'; return; }
+  if (!c) { info.textContent = ''; el.innerHTML = '<p class="vacio">Aún no hay merma cargada. Sube el archivo de merma arriba.</p>'; return; }
   var p = computeMerma(c.filas, c.fechaCorte);
   var cortes = cortesDe('merma');
   var ant = cortes.length > 1 ? computeMerma(cortes[cortes.length - 2].filas, cortes[cortes.length - 2].fechaCorte).total : null;
@@ -1257,8 +868,6 @@ function renderMerma() {
     el.insertAdjacentHTML('beforeend', '<div class="grafica"><h3>Evolución por corte</h3><canvas id="cv-merma-cortes"></canvas></div>');
     dibujarBarras($('cv-merma-cortes'), ev.map(function (e) { return { etiqueta: e.fecha.slice(5), valor: e.monto }; }), fmtDinero);
   }
-  resumenes.merma = resumenMermaTexto(c, ant);
-  el.insertAdjacentHTML('beforeend', resumenBoxHTML('merma', resumenes.merma));
 }
 
 /* Sección "Fuera de política (más de 3 días)" al inicio del panel de
@@ -1311,7 +920,7 @@ function fueraPoliticaHTML(c) {
 function renderTransf() {
   var c = ultimaCarga('transf');
   var el = $('transf-panel'), info = $('transf-corte');
-  if (!c) { info.textContent = ''; resumenes.transf = ''; el.innerHTML = '<p class="vacio">Aún no hay transferencias cargadas. Sube el archivo de transferencias arriba.</p>'; return; }
+  if (!c) { info.textContent = ''; el.innerHTML = '<p class="vacio">Aún no hay transferencias cargadas. Sube el archivo de transferencias arriba.</p>'; return; }
   info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · Formato: ' + (c.formato === 'destino' ? 'Destino' : c.formato === 'detallado' ? 'Detallado' : 'SAP');
   var html = fueraPoliticaHTML(c);
   if (c.formato === 'detallado') {
@@ -1390,14 +999,12 @@ function renderTransf() {
       rows2, '<td>Total</td><td></td><td></td><td></td><td class="num">' + fmtDinero(q.importeTotal) + '</td><td></td><td></td><td></td>');
   }
   el.innerHTML = html;
-  resumenes.transf = resumenTransfTexto(c);
-  el.insertAdjacentHTML('beforeend', resumenBoxHTML('transf', resumenes.transf));
 }
 
 function renderBloq() {
   var c = ultimaCarga('bloq');
   var el = $('bloq-panel'), info = $('bloq-corte');
-  if (!c) { info.textContent = ''; resumenes.bloq = ''; el.innerHTML = '<p class="vacio">Aún no hay stock bloqueado cargado. Sube el archivo de bloqueados arriba.</p>'; return; }
+  if (!c) { info.textContent = ''; el.innerHTML = '<p class="vacio">Aún no hay stock bloqueado cargado. Sube el archivo de bloqueados arriba.</p>'; return; }
   info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · Formato: ' + (c.formato === 'concentrado' ? 'Concentrado' : 'Bloq original');
   var html = '';
   if (c.advertencia) html += '<div class="alerta">' + esc(c.advertencia) + '</div>';
@@ -1447,11 +1054,7 @@ function renderBloq() {
       [{ t: 'Centro' }, { t: 'Material' }, { t: 'Descripción' }, { t: 'Departamento' }, { t: 'Stock bloq.', num: true }, { t: 'Importe', num: true }, { t: 'Seguimiento' }], topRows2, '');
   }
   el.innerHTML = html;
-  resumenes.bloq = resumenBloqTexto(c);
-  el.insertAdjacentHTML('beforeend', resumenBoxHTML('bloq', resumenes.bloq));
 }
-
-var rotFiltro = 'todas';
 
 function tablaRotativos(rows) {
   var html = rows.map(function (x) {
@@ -1484,30 +1087,10 @@ function tablaTopDiferencias(titulo, filasTop) {
     rows, '');
 }
 
-function renderRotDetalle(carga, filtro) {
-  var el = $('rot-detalle');
-  if (!el || !carga) return;
-  var filas = carga.filas.slice().sort(function (a, b) {
-    if (a.fecha && b.fecha && a.fecha !== b.fecha) return (a.fecha < b.fecha) ? 1 : -1;
-    return (a.suc < b.suc) ? -1 : 1;
-  });
-  if (filtro && filtro !== 'todas') filas = filas.filter(function (f) { return f.suc === filtro; });
-  var rows = filas.map(function (f) {
-    return '<tr><td>' + esc(f.suc) + ' ' + esc(nombreTienda(f.suc)) + '</td><td>' + fmtFecha(f.fecha) + '</td><td>' + esc(f.rol) + '</td>' +
-      '<td>' + esc(f.articulo) + '</td><td>' + esc(f.descripcion) + '</td>' +
-      '<td class="num">' + fmtNum(f.teo) + '</td><td class="num">' + fmtNum(f.fis) + '</td>' +
-      '<td class="num">' + fmtNum(f.difu) + '</td><td class="num">' + fmtDinero(f.difp) + '</td></tr>';
-  }).join('');
-  el.innerHTML = '<h3>Detalle por artículo (' + filas.length + ' renglones)</h3>' + tablaHTML(
-    [{ t: 'Sucursal' }, { t: 'Fecha' }, { t: 'ROL' }, { t: 'Artículo' }, { t: 'Descripción' },
-     { t: 'TEO', num: true }, { t: 'FIS', num: true }, { t: 'DIFU', num: true }, { t: 'DIFP', num: true }],
-    rows, '');
-}
-
 function renderRotativos() {
   var c = ultimaCarga('rot');
   var el = $('rot-panel'), info = $('rot-corte');
-  if (!c) { info.textContent = ''; resumenes.rot = ''; el.innerHTML = '<p class="vacio">Aún no hay rotativos cargados. Sube el archivo de rotativos arriba.</p>'; return; }
+  if (!c) { info.textContent = ''; el.innerHTML = '<p class="vacio">Aún no hay rotativos cargados. Sube el archivo de rotativos arriba.</p>'; return; }
   var p = computeRotativos(c.filas);
   var multi = computeRotativosMulti(cortesDe('rot'));
   var top = computeTopDiferencias(c.filas);
@@ -1518,14 +1101,14 @@ function renderRotativos() {
     var ultRows = multi.filas.filter(function (x) { return x.semana === ult; });
     html += '<h3>Última semana: ' + esc(etiquetaSemana(ult)) + '</h3><div class="totales">';
     ultRows.forEach(function (x) {
-      var color = x.cumplimiento >= 100 ? '#1d4ed8' : x.cumplimiento >= 50 ? '#f97316' : '#ea580c';
-      html += '<div class="total-card' + (x.cumplimiento >= 100 ? ' destacado' : '') + '">' +
+      var color = x.cumplimiento >= 100 ? '#1d4ed8' : '#f97316';
+      html += '<div class="total-card semana-blanca">' +
         '<div class="etiqueta">' + esc(x.suc) + ' ' + esc(nombreTienda(x.suc)) + '</div>' +
         '<div class="valor">' + Math.round(x.cumplimiento) + '%</div>' +
         '<div class="barra-fila"><span class="btrack"><span class="bfill" style="display:block;width:' + Math.round(x.cumplimiento) + '%;background:' + color + '"></span></span></div>' +
         '<div class="sub">' + x.articulos + ' / ' + x.meta + ' artículos · ' + x.conteos + ' conteos</div>' +
         '<div class="sub">DIFU ' + fmtNum(x.difu) + ' · DIFP ' + fmtDinero(x.difp) + '</div>' +
-        '<div class="sub"><span class="nivel ' + (x.estatus === 'Cumplido' ? 'controlado' : 'seguimiento') + '">' + x.estatus + '</span></div></div>';
+        '<div class="sub"><span class="nivel neutro">' + x.estatus + '</span></div></div>';
     });
     html += '</div>';
   }
@@ -1535,17 +1118,8 @@ function renderRotativos() {
   html += '<h3>Mayores diferencias en piezas</h3>';
   html += tablaTopDiferencias('Faltantes — Top 10', top.faltantesPiezas);
   html += tablaTopDiferencias('Sobrantes — Top 10', top.sobrantesPiezas);
-  var opts = ['<option value="todas">Todas las sucursales</option>'].concat(ROT_SUC.map(function (s) {
-    return '<option value="' + s + '"' + (rotFiltro === s ? ' selected' : '') + '>' + s + ' ' + esc(nombreTienda(s)) + '</option>';
-  })).join('');
-  html += '<h3>Detalle por artículo</h3><label class="hint">Filtrar por sucursal: <select id="rot-filtro">' + opts + '</select></label><div id="rot-detalle"></div>';
   html += '<h3>Productividad semanal por sucursal</h3>' + tablaRotativos(multi.filas);
   el.innerHTML = html;
-  var sel = $('rot-filtro');
-  if (sel) sel.addEventListener('change', function () { rotFiltro = sel.value; renderRotDetalle(c, rotFiltro); });
-  renderRotDetalle(c, rotFiltro);
-  resumenes.rot = resumenRotTexto(c, multi.filas);
-  el.insertAdjacentHTML('beforeend', resumenBoxHTML('rot', resumenes.rot));
 }
 
 function renderCargas() {
@@ -1560,7 +1134,7 @@ function renderCargas() {
   }).join('');
 }
 
-function renderTodo() { renderMerma(); renderTransf(); renderBloq(); renderRotativos(); renderCargas(); renderResumenCompleto(); }
+function renderTodo() { renderMerma(); renderTransf(); renderBloq(); renderRotativos(); renderCargas(); }
 
 /* ---- subida e importación ---- */
 function leerArchivo(file) {
@@ -1691,38 +1265,6 @@ async function procesarArchivos(files) {
   renderPendientes();
 }
 
-/* ---- exportación a Excel ---- */
-function exportar(tipo) {
-  if (typeof XLSX === 'undefined') { toast('No se pudo cargar la librería de Excel. Revisa tu conexión e inténtalo de nuevo.'); return; }
-  var wb = XLSX.utils.book_new();
-  var tipos = tipo ? [tipo] : ['merma', 'transf', 'bloq', 'rot'];
-  var resumen = [['PANEL DE SEGUIMIENTO — RESUMEN'], ['Generado', new Date().toLocaleString('es-MX')], [], ['Reporte', 'Corte', 'Total principal', 'Registros']];
-  var hubo = false;
-  tipos.forEach(function (t) {
-    var c = ultimaCarga(t);
-    if (!c) return;
-    hubo = true;
-    var etiqueta = nombreTipo(t);
-    var totalTxt = '';
-    if (t === 'merma') totalTxt = fmtDinero(computeMerma(c.filas, c.fechaCorte).total);
-    if (t === 'transf' && c.formato === 'destino') totalTxt = fmtNum(computeTransfDestino(c.filas).piezasPend) + ' piezas pendientes';
-    if (t === 'transf' && c.formato === 'detallado') { var dd = computeTransfDetallado(c.filas); totalTxt = fmtDinero(dd.importeTotal) + ' · ' + fmtNum(dd.piezasPend) + ' piezas pendientes'; }
-    if (t === 'transf' && c.formato !== 'destino' && c.formato !== 'detallado') totalTxt = fmtDinero(computeTransfSAP(c.filas).importeTotal);
-    if (t === 'bloq' && c.formato === 'concentrado') totalTxt = fmtDinero(computeBloqConc(c.filas, c.resumenHoja).total);
-    if (t === 'bloq' && c.formato !== 'concentrado') totalTxt = fmtDinero(computeBloqOrig(c.filas).impacto) + ' impacto';
-    if (t === 'rot') { var rp = computeRotativos(c.filas); totalTxt = fmtNum(rp.totalArticulos) + ' artículos · ' + rp.totalConteos + ' conteos'; }
-    resumen.push([etiqueta, c.fechaCorte, totalTxt, c.filas.length]);
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(panelAOA(t, c, t === 'rot' ? cortesDe('rot') : null)), 'Panel ' + etiqueta);
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detalleJSON(t, c)), 'Detallado ' + etiqueta);
-  });
-  if (!hubo) { toast('No hay datos cargados para exportar.'); return; }
-  if (!tipo) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(resumen), 'Resumen');
-  var nombre = tipo ? ('reporte-' + tipo + '-' + (ultimaCarga(tipo) || {}).fechaCorte + '.xlsx')
-    : ('reporte-completo-' + hoyISO() + '.xlsx');
-  XLSX.writeFile(wb, nombre);
-  toast('Excel descargado: ' + nombre);
-}
-
 /* ---- eventos ---- */
 function init() {
   cargarEstado();
@@ -1743,13 +1285,6 @@ function init() {
     });
   });
   document.addEventListener('click', function (e) {
-    var cp = e.target.closest('[data-copiar]');
-    if (cp) {
-      var t = cp.getAttribute('data-copiar');
-      var txt = t === 'completo' ? resumenCompletoTexto(resumenes) : (resumenes[t] || '');
-      if (txt) copiarTexto(txt); else toast('No hay datos cargados para copiar.');
-      return;
-    }
     var imp = e.target.closest('[data-importar]');
     if (imp) { importarPendiente(imp.getAttribute('data-importar')); return; }
     var q = e.target.closest('[data-quitar]');
@@ -1772,11 +1307,6 @@ function init() {
     state.seguimiento[clave][s.getAttribute('data-campo')] = s.value;
     guardarEstado();
   });
-  $('exp-todo').addEventListener('click', function () { exportar(null); });
-  $('exp-merma').addEventListener('click', function () { exportar('merma'); });
-  $('exp-transf').addEventListener('click', function () { exportar('transf'); });
-  $('exp-bloq').addEventListener('click', function () { exportar('bloq'); });
-  $('exp-rot').addEventListener('click', function () { exportar('rot'); });
   renderTodo();
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(function () {});
