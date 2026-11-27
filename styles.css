@@ -87,11 +87,11 @@ main { max-width: 960px; margin: 0 auto; padding: 12px 12px 24px; }
 .tab.active { background: #1d4ed8; color: #fff; border-color: #1d4ed8; }
 
 /* Identidad única azul / blanco / naranja para todo el panel */
-#tab-merma, #tab-transf, #tab-bloq, #tab-rot { border-top: 4px solid #1d4ed8; }
-#tab-merma h2, #tab-transf h2, #tab-bloq h2, #tab-rot h2 { color: #1d4ed8; }
-#tab-merma th, #tab-transf th, #tab-bloq th, #tab-rot th { background: #1d4ed8; }
-#tab-merma .total-card, #tab-transf .total-card, #tab-bloq .total-card, #tab-rot .total-card { background: #eff6ff; border-color: #bfdbfe; }
-#tab-merma .total-card.destacado, #tab-transf .total-card.destacado, #tab-bloq .total-card.destacado, #tab-rot .total-card.destacado { background: linear-gradient(135deg, #1e40af, #1d4ed8); border-color: #1e40af; }
+#tab-merma, #tab-transf, #tab-bloq, #tab-rot, #tab-ajus { border-top: 4px solid #1d4ed8; }
+#tab-merma h2, #tab-transf h2, #tab-bloq h2, #tab-rot h2, #tab-ajus h2 { color: #1d4ed8; }
+#tab-merma th, #tab-transf th, #tab-bloq th, #tab-rot th, #tab-ajus th { background: #1d4ed8; }
+#tab-merma .total-card, #tab-transf .total-card, #tab-bloq .total-card, #tab-rot .total-card, #tab-ajus .total-card { background: #eff6ff; border-color: #bfdbfe; }
+#tab-merma .total-card.destacado, #tab-transf .total-card.destacado, #tab-bloq .total-card.destacado, #tab-rot .total-card.destacado, #tab-ajus .total-card.destacado { background: linear-gradient(135deg, #1e40af, #1d4ed8); border-color: #1e40af; }
 
 /* Tarjetas de totales */
 .totales { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 10px 0; }
@@ -179,3 +179,41 @@ footer { max-width: 960px; margin: 0 auto; padding: 0 16px 24px; color: #5a6b7c;
 #tab-transf .fp-box .total-card.fp-destacado .valor { color: #fff; }
 .filtro-fp { margin: 4px 0 8px; font-size: 14px; }
 .filtro-fp input { margin-right: 6px; accent-color: #ea580c; }
+
+/* ---- ajustes JD ---- */
+.pills { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.mini-pill {
+  padding: 6px 14px;
+  border: 1px solid #c3d2e0;
+  background: #fff;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1d4ed8;
+  cursor: pointer;
+}
+.mini-pill.active { background: #1d4ed8; color: #fff; border-color: #1d4ed8; }
+.btn-per {
+  padding: 4px 10px;
+  border: 1px solid #c3d2e0;
+  background: #fff;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #1d4ed8;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-per.marcado { background: #dcfce7; border-color: #86efac; color: #166534; }
+.per-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 800;
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #86efac;
+}
+.sel-semana { font-size: 14px; font-weight: 600; }
+.sel-semana select { font-size: 15px; padding: 6px; border: 1px solid #c3d2e0; border-radius: 6px; margin: 4px 0; }

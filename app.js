@@ -98,7 +98,8 @@ var COLUMNAS_ESPERADAS =
   'TRANSFERENCIAS (SAP): hoja REPORTE con ZONA, SUCURSAL ORIGEN, DOCUMENTO CONTABLE, FECHA CONTABLE, DIAS TRANSCURRIDOS, IMPORTE, SUCURSAL DESTINO, ESTATUS.\n' +
   'BLOQUEADO (CONCENTRADO): hoja CONCENTRADO con Centro, Material, EAN/UPC, Denomin., Unidad, Jerarquía 2, Almacén, Bloqueado, V. Stock bloq. (y hoja RESUMEN con Centro, Importe bloqueado).\n' +
   'BLOQUEADO (original): Hoja1 con ZONA, Material, Centro, Sucursal, Almacen, Libre Util, Stock Bloq, Cto, Importe, FORMATO, Descripción, Departamento, Clase.\n' +
-  'ROTATIVOS: SUC, ART, TEO, FIS, DIFU, DIFP, FCN, ROL (solo se siguen las sucursales 127, 331, 333, 334, 336 y 1060; la semana va de jueves a miércoles).';
+  'ROTATIVOS: SUC, ART, TEO, FIS, DIFU, DIFP, FCN, ROL (solo se siguen las sucursales 127, 331, 333, 334, 336 y 1060; la semana va de jueves a miércoles).\n' +
+  'AJUSTES JD: Centro, Almacén, Fe.contabilización, Material, Texto breve de material, Clase de movimiento, Cantidad, Impte.mon.local, Documento material, Nombre del usuario. Los renglones con Centro vacío son totales de SAP y se ignoran.';
 
 function detectarTipo(wb) {
   var hojas = wb.SheetNames || [];
@@ -127,6 +128,13 @@ function detectarTipo(wb) {
     if (tiene(cols, 'SUC') && tiene(cols, 'ART') && tiene(cols, 'FCN') && tiene(cols, 'ROL') &&
         tiene(cols, 'DIFU') && tiene(cols, 'DIFP')) {
       return { tipo: 'rot', formato: 'rotativos', hoja: hojas[i] };
+    }
+    // Ajustes JD: Centro, Fe.contabilización, Material, Clase de movimiento,
+    // Cantidad, Impte.mon.local. No confundir con merma (que trae Fecha de
+    // entrada y Costo Total) ni con bloqueado (Stock Bloq).
+    if (tiene(cols, 'Centro') && tiene(cols, 'Fe.contabilización') && tiene(cols, 'Material') &&
+        tiene(cols, 'Clase de movimiento') && tiene(cols, 'Cantidad') && tiene(cols, 'Impte.mon.local')) {
+      return { tipo: 'ajus', formato: 'ajustes', hoja: hojas[i] };
     }
     if (tiene(cols, 'Stock Bloq') && tiene(cols, 'Importe') && tiene(cols, 'Libre Util')) {
       return { tipo: 'bloq', formato: 'original', hoja: hojas[i] };
@@ -659,6 +667,184 @@ function computeTopDiferencias(filas) {
     faltantesPiezas: faltPzas, sobrantesPiezas: sobPzas };
 }
 
+/* ---------------- ajustes JD ---------------- */
+
+/* Siembra inicial de perecederos (por número de artículo). Edgar puede
+   marcar o quitar cualquiera con un toque; la marca persiste entre cargas. */
+var PERECEDEROS_INICIAL = ['3102848', '3109877', '3718256', '3102823', '3104239',
+  '3019255', '3628355', '3090922', '3724320', '3728377', '3311121', '3853689', '3017928'];
+
+/* Los renglones con Centro vacío son los totales de SAP al final del archivo
+   y se ignoran: solo cuentan los renglones con Centro. */
+function parseAjustes(filas) {
+  var out = [];
+  filas.forEach(function (r) {
+    var centro = str(r['Centro']);
+    if (!centro) return;
+    out.push({
+      centro: centro,
+      almacen: str(r['Almacén']),
+      fecha: parseFecha(r['Fe.contabilización']),
+      articulo: str(r['Material']),
+      descripcion: str(r['Texto breve de material']),
+      movimiento: str(r['Clase de movimiento']),
+      cantidad: num(r['Cantidad']),
+      importe: num(r['Impte.mon.local']),
+      documento: str(r['Documento material']),
+      usuario: str(r['Nombre del usuario'])
+    });
+  });
+  return out;
+}
+
+/* La semana de ajustes va de LUNES a DOMINGO. Devuelve el lunes (ISO)
+   de la semana que contiene la fecha dada. */
+function lunesDe(iso) {
+  var d = new Date(iso + 'T00:00:00');
+  var desdeLunes = (d.getDay() - 1 + 7) % 7; /* getDay: domingo=0, lunes=1 */
+  d.setDate(d.getDate() - desdeLunes);
+  return isoDeFecha(d);
+}
+function domingoDe(lunesISO) {
+  var d = new Date(lunesISO + 'T00:00:00');
+  d.setDate(d.getDate() + 6);
+  return isoDeFecha(d);
+}
+function etiquetaSemanaLun(lunesISO) {
+  var dom = domingoDe(lunesISO);
+  return 'Semana ' + lunesISO.slice(8, 10) + '/' + lunesISO.slice(5, 7) +
+    '–' + dom.slice(8, 10) + '/' + dom.slice(5, 7) + '/' + dom.slice(0, 4);
+}
+
+/* Pares corregidos: mismo artículo, misma sucursal y misma fecha con un
+   renglón 701 y uno 702 de signos opuestos. El efecto neto del par es la
+   suma de ambos importes. */
+function computeParesCorregidos(filas) {
+  var grupos = {};
+  filas.forEach(function (f) {
+    if (!f.fecha || !f.articulo) return;
+    var k = f.centro + '|' + f.articulo + '|' + f.fecha;
+    if (!grupos[k]) grupos[k] = { centro: f.centro, articulo: f.articulo, descripcion: f.descripcion, fecha: f.fecha, salidas: [], reversas: [] };
+    if (f.movimiento === '701') grupos[k].salidas.push(f);
+    else if (f.movimiento === '702') grupos[k].reversas.push(f);
+  });
+  var pares = [];
+  Object.keys(grupos).forEach(function (k) {
+    var g = grupos[k];
+    if (!g.salidas.length || !g.reversas.length) return;
+    g.salidas.sort(function (a, b) { return Math.abs(b.importe) - Math.abs(a.importe); });
+    g.reversas.sort(function (a, b) { return Math.abs(b.importe) - Math.abs(a.importe); });
+    var n = Math.min(g.salidas.length, g.reversas.length);
+    for (var i = 0; i < n; i++) {
+      pares.push({ centro: g.centro, articulo: g.articulo, descripcion: g.descripcion, fecha: g.fecha,
+        imp701: g.salidas[i].importe, imp702: g.reversas[i].importe,
+        efecto: g.salidas[i].importe + g.reversas[i].importe });
+    }
+  });
+  pares.sort(function (a, b) { return Math.abs(b.efecto) - Math.abs(a.efecto); });
+  return pares;
+}
+
+function computeAjustes(filas) {
+  var neto = 0;
+  var porMov = {};
+  var porSuc = {};
+  var porArt = {};
+  var porSemana = {};
+  var porSemanaSuc = {};
+  var fechaMin = null, fechaMax = null;
+  filas.forEach(function (f) {
+    neto += f.importe;
+    var mv = porMov[f.movimiento] || (porMov[f.movimiento] = { mov: f.movimiento, n: 0, importe: 0, cantidad: 0 });
+    mv.n++; mv.importe += f.importe; mv.cantidad += f.cantidad;
+    var s = porSuc[f.centro] || (porSuc[f.centro] = { centro: f.centro, ajustes: 0, neto: 0, m701: { n: 0, importe: 0 }, m702: { n: 0, importe: 0 } });
+    s.ajustes++; s.neto += f.importe;
+    if (f.movimiento === '701') { s.m701.n++; s.m701.importe += f.importe; }
+    if (f.movimiento === '702') { s.m702.n++; s.m702.importe += f.importe; }
+    var a = porArt[f.articulo] || (porArt[f.articulo] = { articulo: f.articulo, descripcion: f.descripcion, ajustes: 0, importe: 0, movs: {} });
+    a.ajustes++; a.importe += f.importe;
+    a.movs[f.movimiento] = (a.movs[f.movimiento] || 0) + 1;
+    if (f.fecha) {
+      if (!fechaMin || f.fecha < fechaMin) fechaMin = f.fecha;
+      if (!fechaMax || f.fecha > fechaMax) fechaMax = f.fecha;
+      var sem = lunesDe(f.fecha);
+      var w = porSemana[sem] || (porSemana[sem] = { semana: sem, etiqueta: etiquetaSemanaLun(sem), ajustes: 0, imp701: 0, imp702: 0, neto: 0 });
+      w.ajustes++; w.neto += f.importe;
+      if (f.movimiento === '701') w.imp701 += f.importe;
+      if (f.movimiento === '702') w.imp702 += f.importe;
+      var ks = sem + '|' + f.centro;
+      var ws = porSemanaSuc[ks] || (porSemanaSuc[ks] = { semana: sem, suc: f.centro, ajustes: 0, imp701: 0, imp702: 0, neto: 0 });
+      ws.ajustes++; ws.neto += f.importe;
+      if (f.movimiento === '701') ws.imp701 += f.importe;
+      if (f.movimiento === '702') ws.imp702 += f.importe;
+    }
+  });
+  function porAbsImporte(a, b) { return Math.abs(b.importe) - Math.abs(a.importe); }
+  var porSucursal = Object.keys(porSuc).map(function (k) {
+    var s = porSuc[k];
+    s.nombre = nombreTienda(s.centro);
+    return s;
+  }).sort(function (a, b) { return Math.abs(b.neto) - Math.abs(a.neto); });
+  var topPesos = {}, topPiezas = {};
+  Object.keys(porSuc).forEach(function (cen) {
+    var rows = filas.filter(function (f) { return f.centro === cen; });
+    topPesos[cen] = rows.slice().sort(porAbsImporte).slice(0, 10);
+    topPiezas[cen] = rows.slice().sort(function (a, b) { return Math.abs(b.cantidad) - Math.abs(a.cantidad); }).slice(0, 10);
+  });
+  var articulos = Object.keys(porArt).map(function (k) { return porArt[k]; });
+  var topArticulos = articulos.slice().sort(porAbsImporte).slice(0, 10);
+  var repetitivos = articulos.filter(function (a) { return a.ajustes >= 2; })
+    .sort(function (a, b) { return (b.ajustes - a.ajustes) || porAbsImporte(a, b); });
+  var semanas = Object.keys(porSemana).map(function (k) { return porSemana[k]; })
+    .sort(function (a, b) { return (a.semana < b.semana) ? -1 : 1; });
+  return { total: neto, ajustes: filas.length,
+    porMovimiento: Object.keys(porMov).map(function (k) { return porMov[k]; }).sort(function (a, b) { return a.mov < b.mov ? -1 : 1; }),
+    porSucursal: porSucursal, topPesos: topPesos, topPiezas: topPiezas,
+    topArticulos: topArticulos, repetitivos: repetitivos,
+    porArticulo: articulos,
+    repetitivosCount: repetitivos.length, articulosDistintos: articulos.length,
+    semanas: semanas, porSemanaSuc: porSemanaSuc,
+    corregidos: computeParesCorregidos(filas),
+    fechaMin: fechaMin, fechaMax: fechaMax,
+    sucursales: Object.keys(porSuc).sort() };
+}
+
+/* Agregación semanal de TODOS los cortes de ajustes. Por cada par
+   (semana, sucursal) manda el corte más nuevo que tenga renglones de ese
+   par; si ningún corte trae renglones del par, queda en 0. Así las semanas
+   no se duplican entre cortes y no se pierde el historial. */
+function computeAjustesMulti(cortes) {
+  var porPar = {};
+  var semanasSet = {};
+  var sucsSet = {};
+  var orden = (cortes || []).slice().sort(function (a, b) { return (a.fechaCorte < b.fechaCorte) ? -1 : 1; });
+  orden.forEach(function (c) {
+    var p = computeAjustes(c.filas);
+    Object.keys(p.porSemanaSuc).forEach(function (k) {
+      var x = p.porSemanaSuc[k];
+      if (x.ajustes > 0) porPar[k] = x;
+      semanasSet[x.semana] = 1;
+      sucsSet[x.suc] = 1;
+    });
+  });
+  var semanas = Object.keys(semanasSet).sort().reverse();
+  var sucs = Object.keys(sucsSet).sort();
+  var filas = [];
+  semanas.forEach(function (sem) {
+    sucs.forEach(function (suc) {
+      var x = porPar[sem + '|' + suc];
+      if (x) filas.push({ semana: sem, etiqueta: etiquetaSemanaLun(sem), suc: suc, ajustes: x.ajustes, imp701: x.imp701, imp702: x.imp702, neto: x.neto });
+      else filas.push({ semana: sem, etiqueta: etiquetaSemanaLun(sem), suc: suc, ajustes: 0, imp701: 0, imp702: 0, neto: 0 });
+    });
+  });
+  var porSemana = semanas.map(function (sem) {
+    var tot = { semana: sem, etiqueta: etiquetaSemanaLun(sem), ajustes: 0, imp701: 0, imp702: 0, neto: 0 };
+    filas.forEach(function (x) { if (x.semana === sem) { tot.ajustes += x.ajustes; tot.imp701 += x.imp701; tot.imp702 += x.imp702; tot.neto += x.neto; } });
+    return tot;
+  }).sort(function (a, b) { return (a.semana < b.semana) ? -1 : 1; });
+  return { filas: filas, semanas: semanas, sucursales: sucs, porSemana: porSemana };
+}
+
 /* Agregación semanal de TODOS los cortes de rotativos. Por cada par
    (semana, sucursal) manda el corte más nuevo que tenga renglones de ese
    par; si ningún corte trae renglones del par, queda en 0/Pendiente. Así
@@ -708,6 +894,10 @@ if (typeof module !== 'undefined' && module.exports) {
     computeBloqOrig: computeBloqOrig, filasDeHoja: filasDeHoja,
     parseRotativos: parseRotativos, computeRotativos: computeRotativos,
     computeTopDiferencias: computeTopDiferencias, computeRotativosMulti: computeRotativosMulti,
+    parseAjustes: parseAjustes, computeAjustes: computeAjustes,
+    computeAjustesMulti: computeAjustesMulti, computeParesCorregidos: computeParesCorregidos,
+    lunesDe: lunesDe, etiquetaSemanaLun: etiquetaSemanaLun,
+    PERECEDEROS_INICIAL: PERECEDEROS_INICIAL,
     nombreTienda: nombreTienda, CATALOGO_TIENDAS: CATALOGO_TIENDAS,
     juevesDe: juevesDe, etiquetaSemana: etiquetaSemana,
     fmtDifp: fmtDifp,
@@ -719,10 +909,13 @@ if (typeof module !== 'undefined' && module.exports) {
 /* ================= UI (solo navegador) ================= */
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
-var state = { cargas: [], seguimiento: {} };
+var state = { cargas: [], seguimiento: {}, perecederos: PERECEDEROS_INICIAL.slice() };
 var pendientes = [];
 var tabActual = 'merma';
 var soloFPTransf = false; /* filtro del detalle por artículo de transferencias: solo fuera de política */
+var ajusSuc = null; /* sucursal seleccionada en Top 10 de ajustes */
+var ajusModo = 'pesos'; /* 'pesos' o 'piezas' en Top 10 de ajustes */
+var ajusSemanaSel = null; /* semana (lunes ISO) seleccionada en Ajustes JD */
 
 function cargarEstado() {
   try {
@@ -731,6 +924,7 @@ function cargarEstado() {
   } catch (e) { state = { cargas: [], seguimiento: {} }; }
   if (!state.seguimiento) state.seguimiento = {};
   if (!state.cargas) state.cargas = [];
+  if (!state.perecederos || !Array.isArray(state.perecederos)) state.perecederos = PERECEDEROS_INICIAL.slice();
 }
 function guardarEstado() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(state)); }
@@ -752,7 +946,7 @@ function cortesDe(tipo) {
     .sort(function (a, b) { return (a.fechaCorte < b.fechaCorte) ? -1 : 1; });
 }
 function nombreTipo(tipo) {
-  return tipo === 'merma' ? 'Merma' : tipo === 'transf' ? 'Transferencias' : tipo === 'rot' ? 'Rotativos' : 'Bloqueado';
+  return tipo === 'merma' ? 'Merma' : tipo === 'transf' ? 'Transferencias' : tipo === 'rot' ? 'Rotativos' : tipo === 'ajus' ? 'Ajustes JD' : 'Bloqueado';
 }
 
 /* ---- gráficas simples ---- */
@@ -806,6 +1000,62 @@ function barrasHTML(titulo, items, fmt) {
       '<span class="bvalor">' + (fmt ? fmt(it.valor) : fmtNum(it.valor)) + '</span></div>';
   });
   return html + '</div>';
+}
+/* Barras horizontales con signo: la longitud es por |valor|, azul si el
+   valor es positivo o cero, naranja si es negativo. */
+function barrasSignoHTML(titulo, items, fmt) {
+  if (!items.length) return '';
+  var max = Math.max.apply(null, items.map(function (i) { return Math.abs(i.valor); })) || 1;
+  var html = '<div class="grafica"><h3>' + esc(titulo) + '</h3>';
+  items.forEach(function (it) {
+    var pct = (Math.abs(it.valor) / max * 100).toFixed(1);
+    var color = it.valor < 0 ? '#f97316' : '#1d4ed8';
+    html += '<div class="barra-fila"><span class="blabel">' + esc(it.etiqueta) + '</span>' +
+      '<span class="btrack"><span class="bfill" style="display:block;width:' + pct + '%;background:' + color + '"></span></span>' +
+      '<span class="bvalor">' + (fmt ? fmt(it.valor) : fmtNum(it.valor)) + '</span></div>';
+  });
+  return html + '</div>';
+}
+/* Barras verticales (canvas) con signo: altura por |valor|, azul si el valor
+   es positivo o cero, naranja si es negativo. */
+function dibujarBarrasSigno(canvas, items, fmt) {
+  if (!canvas) return;
+  var dpr = window.devicePixelRatio || 1;
+  var W = canvas.clientWidth || 320, H = 180;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  var ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+  if (!items.length) { ctx.fillStyle = '#5a6b7c'; ctx.font = '13px sans-serif'; ctx.fillText('Sin datos', 10, 30); return; }
+  var max = Math.max.apply(null, items.map(function (i) { return Math.abs(i.valor); })) || 1;
+  var bw = Math.min(48, (W - 20) / items.length - 10);
+  items.forEach(function (it, i) {
+    var h = Math.max(2, (Math.abs(it.valor) / max) * (H - 52));
+    var x = 10 + i * ((W - 20) / items.length) + ((W - 20) / items.length - bw) / 2;
+    ctx.fillStyle = it.valor < 0 ? '#f97316' : '#1d4ed8';
+    ctx.fillRect(x, H - 30 - h, bw, h);
+    ctx.fillStyle = '#1c2b3a'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(fmt ? fmt(it.valor) : fmtNum(it.valor), x + bw / 2, H - 34 - h);
+    ctx.fillText(it.etiqueta, x + bw / 2, H - 12);
+  });
+}
+/* Perecederos: la marca es por número de artículo y persiste entre cargas. */
+function esPerecedero(articulo) {
+  return state.perecederos.indexOf(String(articulo)) >= 0;
+}
+function btnPer(articulo) {
+  var marcado = esPerecedero(articulo);
+  return '<button class="btn-per' + (marcado ? ' marcado' : '') + '" data-per="' + esc(articulo) + '" type="button">' +
+    (marcado ? '🌿 Perecedero ✓' : 'Marcar perecedero') + '</button>';
+}
+function togglePerecedero(articulo) {
+  var a = String(articulo);
+  var i = state.perecederos.indexOf(a);
+  if (i >= 0) state.perecederos.splice(i, 1);
+  else state.perecederos.push(a);
+  guardarEstado();
+  renderAjustes();
+  toast(i >= 0 ? 'Artículo ' + a + ' ya no es perecedero.' : 'Artículo ' + a + ' marcado como perecedero.');
 }
 function tablaHTML(headers, rowsHTML, totalRowHTML) {
   var h = headers.map(function (x) { return '<th class="' + (x.num ? 'num' : '') + '">' + esc(x.t) + '</th>'; }).join('');
@@ -1122,6 +1372,144 @@ function renderRotativos() {
   el.innerHTML = html;
 }
 
+function renderAjustes() {
+  var c = ultimaCarga('ajus');
+  var el = $('ajus-panel'), info = $('ajus-corte');
+  if (!c) { info.textContent = ''; el.innerHTML = '<p class="vacio">Aún no hay ajustes cargados. Sube el archivo AJUSTE_JD arriba.</p>'; return; }
+  var p = computeAjustes(c.filas);
+  var multi = computeAjustesMulti(cortesDe('ajus'));
+  info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · ' + p.ajustes + ' ajustes · ' + fmtFecha(p.fechaMin) + ' – ' + fmtFecha(p.fechaMax) + ' · Semana de lunes a domingo';
+  function corta(s, n) { s = str(s); return s.length > n ? s.slice(0, n) + '…' : s; }
+  function movDe(mov) { for (var i = 0; i < p.porMovimiento.length; i++) if (p.porMovimiento[i].mov === mov) return p.porMovimiento[i]; return { mov: mov, n: 0, importe: 0, cantidad: 0 }; }
+  var m701 = movDe('701'), m702 = movDe('702');
+  var html = '';
+  /* 1. Resumen */
+  html += '<div class="totales">' +
+    '<div class="total-card destacado"><div class="etiqueta">Neto</div><div class="valor">' + fmtDifp(p.total) + '</div></div>' +
+    '<div class="total-card"><div class="etiqueta">Ajustes</div><div class="valor">' + p.ajustes + '</div></div>' +
+    '<div class="total-card"><div class="etiqueta">Artículos repetitivos</div><div class="valor">' + p.repetitivosCount + '</div><div class="sub">' + p.articulosDistintos + ' artículos distintos</div></div>' +
+    '<div class="total-card"><div class="etiqueta">Sucursales</div><div class="valor">' + p.porSucursal.length + '</div></div></div>';
+  /* 2. Total por movimiento */
+  html += '<h3>Total por movimiento</h3>';
+  html += barrasSignoHTML('Importe por movimiento', [
+    { etiqueta: '701 Salidas (' + m701.n + ' aj)', valor: m701.importe },
+    { etiqueta: '702 Reversas (' + m702.n + ' aj)', valor: m702.importe }
+  ], fmtDinero);
+  var movRows = p.porSucursal.map(function (x) {
+    return '<tr><td>' + esc(x.centro) + ' ' + esc(x.nombre) + '</td><td class="num">' + x.m701.n + '</td><td class="num">' + fmtDifp(x.m701.importe) + '</td>' +
+      '<td class="num">' + x.m702.n + '</td><td class="num">' + fmtDifp(x.m702.importe) + '</td><td class="num">' + fmtDifp(x.neto) + '</td></tr>';
+  }).join('');
+  html += '<h3>Por sucursal y movimiento</h3>' + tablaHTML(
+    [{ t: 'Sucursal' }, { t: '701 ajustes', num: true }, { t: '701 $', num: true }, { t: '702 ajustes', num: true }, { t: '702 $', num: true }, { t: 'Neto', num: true }],
+    movRows, '<td>Total</td><td class="num">' + m701.n + '</td><td class="num">' + fmtDifp(m701.importe) + '</td><td class="num">' + m702.n + '</td><td class="num">' + fmtDifp(m702.importe) + '</td><td class="num">' + fmtDifp(p.total) + '</td>');
+  /* 3. Top 10 por sucursal */
+  if (!ajusSuc || !p.topPesos[ajusSuc]) ajusSuc = p.porSucursal.length ? p.porSucursal[0].centro : null;
+  var sucSel = null;
+  p.porSucursal.forEach(function (x) { if (x.centro === ajusSuc) sucSel = x; });
+  html += '<h3>Top 10 por sucursal</h3>';
+  html += '<div class="pills">' + p.porSucursal.map(function (x) {
+    return '<button class="mini-pill' + (x.centro === ajusSuc ? ' active' : '') + '" data-ajus-suc="' + esc(x.centro) + '" type="button">' + esc(x.centro) + ' ' + esc(corta(x.nombre, 18)) + '</button>';
+  }).join('') + '</div>';
+  html += '<div class="pills"><button class="mini-pill' + (ajusModo === 'pesos' ? ' active' : '') + '" data-ajus-modo="pesos" type="button">En pesos</button>' +
+    '<button class="mini-pill' + (ajusModo === 'piezas' ? ' active' : '') + '" data-ajus-modo="piezas" type="button">En piezas</button></div>';
+  if (sucSel) {
+    var topRows = ajusModo === 'pesos' ? p.topPesos[ajusSuc] : p.topPiezas[ajusSuc];
+    html += barrasSignoHTML('Top 10 — ' + sucSel.centro + ' ' + sucSel.nombre + ' (' + (ajusModo === 'pesos' ? 'en pesos' : 'en piezas') + ')',
+      topRows.map(function (f) { return { etiqueta: corta(f.descripcion, 20), valor: ajusModo === 'pesos' ? f.importe : f.cantidad }; }),
+      ajusModo === 'pesos' ? fmtDinero : function (v) { return fmtNum(v, 3); });
+    var topTable = topRows.map(function (f) {
+      return '<tr><td>' + esc(f.articulo) + '</td><td>' + esc(f.descripcion) + '</td><td>' + fmtFecha(f.fecha) + '</td><td>' + esc(f.movimiento) + '</td>' +
+        '<td class="num">' + fmtNum(f.cantidad, 3) + '</td><td class="num">' + fmtDifp(f.importe) + '</td><td>' + btnPer(f.articulo) + '</td></tr>';
+    }).join('');
+    html += tablaHTML(
+      [{ t: 'Artículo' }, { t: 'Descripción' }, { t: 'Fecha' }, { t: 'Clase' }, { t: 'Cantidad', num: true }, { t: 'Importe', num: true }, { t: 'Perecedero' }],
+      topTable, '');
+  }
+  /* 4. Artículos más representativos */
+  html += '<h3>Artículos más representativos</h3>';
+  html += barrasSignoHTML('Top 10 artículos por importe total',
+    p.topArticulos.map(function (a) { return { etiqueta: corta(a.descripcion, 20), valor: a.importe }; }), fmtDinero);
+  var topArtRows = p.topArticulos.map(function (a) {
+    return '<tr><td>' + esc(a.articulo) + '</td><td>' + esc(a.descripcion) + '</td><td class="num">' + a.ajustes + '</td>' +
+      '<td class="num">' + fmtDifp(a.importe) + '</td><td>' + Object.keys(a.movs).sort().map(function (m) { return m + ' ×' + a.movs[m]; }).join(', ') + '</td><td>' + btnPer(a.articulo) + '</td></tr>';
+  }).join('');
+  html += tablaHTML(
+    [{ t: 'Artículo' }, { t: 'Descripción' }, { t: 'Ajustes', num: true }, { t: 'Importe total', num: true }, { t: 'Movimientos' }, { t: 'Perecedero' }],
+    topArtRows, '');
+  /* 5. Artículos repetitivos */
+  html += '<h3>Artículos repetitivos</h3>';
+  html += barrasHTML('Top 10 por número de ajustes',
+    p.repetitivos.slice(0, 10).map(function (a) { return { etiqueta: corta(a.descripcion, 20), valor: a.ajustes }; }), fmtNum);
+  var repRows = p.repetitivos.map(function (a) {
+    return '<tr><td>' + esc(a.articulo) + '</td><td>' + esc(a.descripcion) + '</td><td class="num">' + a.ajustes + '</td>' +
+      '<td class="num">' + fmtDifp(a.importe) + '</td><td>' + Object.keys(a.movs).sort().map(function (m) { return m + ' ×' + a.movs[m]; }).join(', ') + '</td><td>' + btnPer(a.articulo) + '</td></tr>';
+  }).join('');
+  html += tablaHTML(
+    [{ t: 'Artículo' }, { t: 'Descripción' }, { t: 'Ajustes', num: true }, { t: 'Importe total', num: true }, { t: 'Movimientos' }, { t: 'Perecedero' }],
+    repRows, '');
+  /* 6. Perecederos */
+  var perList = p.porArticulo.filter(function (a) { return esPerecedero(a.articulo); })
+    .sort(function (a, b) { return Math.abs(b.importe) - Math.abs(a.importe); });
+  var perTotal = perList.reduce(function (acc, a) { return acc + a.importe; }, 0);
+  html += '<h3>🌿 Perecederos</h3>';
+  if (!perList.length) {
+    html += '<p class="hint">Ningún artículo marcado como perecedero en este corte. Marca artículos con el botón "Marcar perecedero" de las tablas de arriba; la marca se guarda y se mantiene en las siguientes cargas.</p>';
+  } else {
+    html += '<div class="totales"><div class="total-card destacado"><div class="etiqueta">Importe total perecederos</div><div class="valor">' + fmtDifp(perTotal) + '</div><div class="sub">' + perList.length + ' artículos marcados · ' + perList.reduce(function (acc, a) { return acc + a.ajustes; }, 0) + ' ajustes</div></div></div>';
+    var perRows = perList.map(function (a) {
+      return '<tr><td>' + esc(a.articulo) + '</td><td>' + esc(a.descripcion) + '</td><td class="num">' + a.ajustes + '</td>' +
+        '<td class="num">' + fmtDifp(a.importe) + '</td><td><span class="per-tag">PERECEDERO</span></td><td>' + btnPer(a.articulo) + '</td></tr>';
+    }).join('');
+    html += tablaHTML(
+      [{ t: 'Artículo' }, { t: 'Descripción' }, { t: 'Ajustes', num: true }, { t: 'Importe total', num: true }, { t: 'Marca' }, { t: 'Quitar' }],
+      perRows, '<td>Total</td><td></td><td class="num">' + perList.reduce(function (acc, a) { return acc + a.ajustes; }, 0) + '</td><td class="num">' + fmtDifp(perTotal) + '</td><td></td><td></td>');
+  }
+  /* 7. Por semana (lun–dom) */
+  html += '<h3>Por semana (lunes a domingo)</h3>';
+  var semanasDesc = multi.porSemana.slice().sort(function (a, b) { return (a.semana < b.semana) ? 1 : -1; });
+  if (!ajusSemanaSel || !multi.porSemana.some(function (w) { return w.semana === ajusSemanaSel; })) ajusSemanaSel = semanasDesc.length ? semanasDesc[0].semana : null;
+  html += '<label class="sel-semana">Semana: <select data-ajus-semana>' + semanasDesc.map(function (w) {
+    return '<option value="' + w.semana + '"' + (w.semana === ajusSemanaSel ? ' selected' : '') + '>' + esc(w.etiqueta) + '</option>';
+  }).join('') + '</select></label>';
+  html += '<div class="grafica"><h3>Neto por semana</h3><canvas id="cv-ajus-semana"></canvas></div>';
+  var semRows = multi.porSemana.map(function (w) {
+    return '<tr><td>' + esc(w.etiqueta) + '</td><td class="num">' + w.ajustes + '</td><td class="num">' + fmtDifp(w.imp701) + '</td><td class="num">' + fmtDifp(w.imp702) + '</td><td class="num">' + fmtDifp(w.neto) + '</td></tr>';
+  }).join('');
+  html += tablaHTML(
+    [{ t: 'Semana' }, { t: 'Ajustes', num: true }, { t: '701 $', num: true }, { t: '702 $', num: true }, { t: 'Neto', num: true }],
+    semRows, '');
+  if (ajusSemanaSel) {
+    var detSem = multi.filas.filter(function (x) { return x.semana === ajusSemanaSel && x.ajustes > 0; });
+    var detRows = detSem.map(function (x) {
+      return '<tr><td>' + esc(x.suc) + ' ' + esc(nombreTienda(x.suc)) + '</td><td class="num">' + x.ajustes + '</td><td class="num">' + fmtDifp(x.imp701) + '</td><td class="num">' + fmtDifp(x.imp702) + '</td><td class="num">' + fmtDifp(x.neto) + '</td></tr>';
+    }).join('');
+    var selW = null;
+    multi.porSemana.forEach(function (w) { if (w.semana === ajusSemanaSel) selW = w; });
+    html += '<h3>Detalle de la semana seleccionada</h3>' + tablaHTML(
+      [{ t: 'Sucursal' }, { t: 'Ajustes', num: true }, { t: '701 $', num: true }, { t: '702 $', num: true }, { t: 'Neto', num: true }],
+      detRows, selW ? '<td>Total</td><td class="num">' + selW.ajustes + '</td><td class="num">' + fmtDifp(selW.imp701) + '</td><td class="num">' + fmtDifp(selW.imp702) + '</td><td class="num">' + fmtDifp(selW.neto) + '</td>' : '');
+  }
+  /* 8. Ajustes corregidos */
+  html += '<h3>Ajustes corregidos (par 701/702 del mismo artículo, sucursal y fecha)</h3>';
+  if (!p.corregidos.length) {
+    html += '<p class="hint">No hay pares 701/702 del mismo artículo, sucursal y fecha en este corte.</p>';
+  } else {
+    var corRows = p.corregidos.map(function (x) {
+      return '<tr><td>' + esc(x.centro) + ' ' + esc(nombreTienda(x.centro)) + '</td><td>' + esc(x.articulo) + '</td><td>' + esc(x.descripcion) + '</td><td>' + fmtFecha(x.fecha) + '</td>' +
+        '<td class="num">' + fmtDifp(x.imp701) + '</td><td class="num">' + fmtDifp(x.imp702) + '</td><td class="num">' + fmtDifp(x.efecto) + '</td></tr>';
+    }).join('');
+    var corTotal = p.corregidos.reduce(function (acc, x) { return acc + x.efecto; }, 0);
+    html += '<p class="hint">' + p.corregidos.length + ' pares corregidos en este corte. El efecto neto de los pares es ' + fmtDifp(corTotal) + '.</p>';
+    html += tablaHTML(
+      [{ t: 'Sucursal' }, { t: 'Artículo' }, { t: 'Descripción' }, { t: 'Fecha' }, { t: '701 $', num: true }, { t: '702 $', num: true }, { t: 'Efecto neto', num: true }],
+      corRows, '');
+  }
+  el.innerHTML = html;
+  dibujarBarrasSigno($('cv-ajus-semana'), multi.porSemana.map(function (w) {
+    return { etiqueta: w.semana.slice(8, 10) + '/' + w.semana.slice(5, 7), valor: w.neto };
+  }), fmtDinero);
+}
+
 function renderCargas() {
   var el = $('cargas-lista');
   if (!state.cargas.length) { el.innerHTML = '<p class="vacio">No hay cargas todavía.</p>'; return; }
@@ -1134,7 +1522,7 @@ function renderCargas() {
   }).join('');
 }
 
-function renderTodo() { renderMerma(); renderTransf(); renderBloq(); renderRotativos(); renderCargas(); }
+function renderTodo() { renderMerma(); renderTransf(); renderBloq(); renderRotativos(); renderAjustes(); renderCargas(); }
 
 /* ---- subida e importación ---- */
 function leerArchivo(file) {
@@ -1157,6 +1545,9 @@ function leerArchivo(file) {
           fechas = filas.map(function (f) { return f.fechaEmb; });
         } else if (det.tipo === 'rot') {
           filas = parseRotativos(filasDeHoja(wb, det.hoja));
+          fechas = filas.map(function (f) { return f.fecha; });
+        } else if (det.tipo === 'ajus') {
+          filas = parseAjustes(filasDeHoja(wb, det.hoja));
           fechas = filas.map(function (f) { return f.fecha; });
         } else if (det.tipo === 'transf') {
           filas = parseTransfSAP(wb);
@@ -1186,6 +1577,10 @@ function leerArchivo(file) {
 }
 
 function resumenPendiente(p) {
+  if (p.tipo === 'ajus') {
+    var pa = computeAjustes(p.filas);
+    return pa.ajustes + ' ajustes · Neto ' + fmtDinero(pa.total) + ' · ' + pa.porSucursal.length + ' sucursales · ' + fmtFecha(pa.fechaMin) + ' – ' + fmtFecha(pa.fechaMax);
+  }
   if (p.tipo === 'rot') {
     var roles = {};
     p.filas.forEach(function (f) { if (f.rol) roles[f.rol] = 1; });
@@ -1239,7 +1634,7 @@ function importarPendiente(id) {
     filas: p.filas, resumenHoja: p.resumenHoja || null, advertencia: p.advertencia || null
   });
   // Máximo 12 cortes por tipo para no llenar el localStorage
-  ['merma', 'transf', 'bloq', 'rot'].forEach(function (t) {
+  ['merma', 'transf', 'bloq', 'rot', 'ajus'].forEach(function (t) {
     var cs = state.cargas.filter(function (c) { return c.tipo === t; })
       .sort(function (a, b) { return (a.fechaCorte < b.fechaCorte) ? -1 : 1; });
     if (cs.length > 12) {
@@ -1280,11 +1675,17 @@ function init() {
     btn.addEventListener('click', function () {
       tabActual = btn.getAttribute('data-tab');
       document.querySelectorAll('.tab').forEach(function (b) { b.classList.toggle('active', b === btn); });
-      ['merma', 'transf', 'bloq', 'rot', 'cargas'].forEach(function (t) { $('tab-' + t).classList.toggle('hidden', t !== tabActual); });
+      ['merma', 'transf', 'bloq', 'rot', 'ajus', 'cargas'].forEach(function (t) { $('tab-' + t).classList.toggle('hidden', t !== tabActual); });
       if (tabActual === 'cargas') renderCargas();
     });
   });
   document.addEventListener('click', function (e) {
+    var per = e.target.closest('[data-per]');
+    if (per) { togglePerecedero(per.getAttribute('data-per')); return; }
+    var as = e.target.closest('[data-ajus-suc]');
+    if (as) { ajusSuc = as.getAttribute('data-ajus-suc'); renderAjustes(); return; }
+    var am = e.target.closest('[data-ajus-modo]');
+    if (am) { ajusModo = am.getAttribute('data-ajus-modo'); renderAjustes(); return; }
     var imp = e.target.closest('[data-importar]');
     if (imp) { importarPendiente(imp.getAttribute('data-importar')); return; }
     var q = e.target.closest('[data-quitar]');
@@ -1298,6 +1699,8 @@ function init() {
     }
   });
   document.addEventListener('change', function (e) {
+    var asem = e.target.closest('[data-ajus-semana]');
+    if (asem) { ajusSemanaSel = asem.value; renderAjustes(); return; }
     var fpf = e.target.closest('[data-filtro-fp]');
     if (fpf) { soloFPTransf = fpf.checked; renderTransf(); return; }
     var s = e.target.closest('[data-seg]');

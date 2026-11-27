@@ -14,13 +14,13 @@
 <body>
 <header class="topbar">
   <h1>Panel de Seguimiento</h1>
-  <p>Merma · Transferencias · Stock Bloqueado · Rotativos — La Paz, BCS</p>
+  <p>Merma · Transferencias · Stock Bloqueado · Rotativos · Ajustes JD — La Paz, BCS</p>
 </header>
 
 <main>
   <section class="card" id="seccion-subir">
     <h2>Alimentar los paneles</h2>
-    <p class="hint">Sube los archivos Excel que te llegan por correo (merma, transferencias, bloqueados o rotativos). La app detecta el tipo por sus columnas. Cada archivo crea un nuevo corte con su fecha.</p>
+    <p class="hint">Sube los archivos Excel que te llegan por correo (merma, transferencias, bloqueados, rotativos o ajustes JD). La app detecta el tipo por sus columnas. Cada archivo crea un nuevo corte con su fecha.</p>
     <div class="dropzone" id="dropzone" tabindex="0">
       <p class="drop-title">Arrastra aquí tus archivos .xlsx</p>
       <p class="drop-sub">o toca para elegirlos</p>
@@ -35,6 +35,7 @@
     <button class="tab" data-tab="transf" type="button">Transferencias</button>
     <button class="tab" data-tab="bloq" type="button">Bloqueado</button>
     <button class="tab" data-tab="rot" type="button">Rotativos</button>
+    <button class="tab" data-tab="ajus" type="button">Ajustes JD</button>
     <button class="tab" data-tab="cargas" type="button">Cargas</button>
   </nav>
 
@@ -60,6 +61,12 @@
     <h2>Rotativos — Productividad de conteos</h2>
     <div class="corte-info" id="rot-corte"></div>
     <div id="rot-panel"></div>
+  </section>
+
+  <section class="card hidden" id="tab-ajus">
+    <h2>Ajustes JD — Ajustes más representativos</h2>
+    <div class="corte-info" id="ajus-corte"></div>
+    <div id="ajus-panel"></div>
   </section>
 
   <section class="card hidden" id="tab-cargas">
