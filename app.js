@@ -875,6 +875,29 @@ function computeRotativosMulti(cortes) {
 }
 
 /* Sección fuera de política para la hoja Panel de la exportación de transferencias. */
+/* Clave única de un renglón de ajuste: corte + documento material +
+   material + fecha + clase de movimiento (+ cantidad/importe para distinguir
+   líneas del mismo documento y artículo). La clasificación es por renglón,
+   no por artículo. */
+function claveAjuste(corte, f) {
+  return (corte.fechaCorte || '') + '|' + f.documento + '|' + f.articulo + '|' +
+    (f.fecha || '') + '|' + f.movimiento + '|' + f.cantidad + '|' + f.importe;
+}
+/* Contador de "Preguntar al JD" para una sucursal del corte: cuántos ajustes
+   y su importe total. `mapa` es clave -> 'rebote' | 'pregunta'. */
+function resumenPreguntaJD(corte, suc, mapa) {
+  var n = 0, total = 0;
+  (corte.filas || []).forEach(function (f) {
+    if (f.centro !== suc) return;
+    if ((mapa || {})[claveAjuste(corte, f)] === 'pregunta') { n++; total += f.importe; }
+  });
+  return { n: n, total: total };
+}
+/* Sucursal por defecto del módulo: la de más ajustes del corte. */
+function sucursalDefault(porSucursal) {
+  if (!porSucursal || !porSucursal.length) return null;
+  return porSucursal.slice().sort(function (a, b) { return b.ajustes - a.ajustes; })[0].centro;
+}
 /* DIFP con signo explícito: "-$14,045.24", "+$7,466.10", "$0.00". */
 function fmtDifp(v) {
   v = num(v);
@@ -896,6 +919,7 @@ if (typeof module !== 'undefined' && module.exports) {
     computeTopDiferencias: computeTopDiferencias, computeRotativosMulti: computeRotativosMulti,
     parseAjustes: parseAjustes, computeAjustes: computeAjustes,
     computeAjustesMulti: computeAjustesMulti, computeParesCorregidos: computeParesCorregidos,
+    claveAjuste: claveAjuste, resumenPreguntaJD: resumenPreguntaJD, sucursalDefault: sucursalDefault,
     lunesDe: lunesDe, etiquetaSemanaLun: etiquetaSemanaLun,
     PERECEDEROS_INICIAL: PERECEDEROS_INICIAL,
     nombreTienda: nombreTienda, CATALOGO_TIENDAS: CATALOGO_TIENDAS,
@@ -909,13 +933,14 @@ if (typeof module !== 'undefined' && module.exports) {
 /* ================= UI (solo navegador) ================= */
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
-var state = { cargas: [], seguimiento: {}, perecederos: PERECEDEROS_INICIAL.slice() };
+var state = { cargas: [], seguimiento: {}, perecederos: PERECEDEROS_INICIAL.slice(), clasificaciones: {} };
 var pendientes = [];
 var tabActual = 'merma';
 var soloFPTransf = false; /* filtro del detalle por artículo de transferencias: solo fuera de política */
-var ajusSuc = null; /* sucursal seleccionada en Top 10 de ajustes */
+var ajusSuc = null; /* sucursal seleccionada (global) en Ajustes JD */
 var ajusModo = 'pesos'; /* 'pesos' o 'piezas' en Top 10 de ajustes */
 var ajusSemanaSel = null; /* semana (lunes ISO) seleccionada en Ajustes JD */
+var soloPreguntaJD = false; /* filtro del Top 10 de ajustes: solo "Preguntar al JD" */
 
 function cargarEstado() {
   try {
@@ -925,6 +950,8 @@ function cargarEstado() {
   if (!state.seguimiento) state.seguimiento = {};
   if (!state.cargas) state.cargas = [];
   if (!state.perecederos || !Array.isArray(state.perecederos)) state.perecederos = PERECEDEROS_INICIAL.slice();
+  if (!state.clasificaciones || typeof state.clasificaciones !== 'object') state.clasificaciones = {};
+  if (typeof state.ajusSuc !== 'string') state.ajusSuc = null;
 }
 function guardarEstado() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(state)); }
@@ -1056,6 +1083,20 @@ function togglePerecedero(articulo) {
   guardarEstado();
   renderAjustes();
   toast(i >= 0 ? 'Artículo ' + a + ' ya no es perecedero.' : 'Artículo ' + a + ' marcado como perecedero.');
+}
+/* Clasificación por RENGLÓN de ajuste (no por artículo): el mismo artículo
+   puede tener un ajuste "Preguntar al JD" y otro sin clasificar. La clave
+   única está en claveAjuste (ver sección de cómputo) y persiste entre cargas
+   como los perecederos. */
+function clasificacionAjuste(corte, f) {
+  return state.clasificaciones[claveAjuste(corte, f)] || '';
+}
+function selectClasificacion(corte, f) {
+  var cur = clasificacionAjuste(corte, f);
+  var cls = cur === 'pregunta' ? ' val-pregunta' : cur === 'rebote' ? ' val-rebote' : '';
+  function opt(v, t) { return '<option value="' + v + '"' + (cur === v ? ' selected' : '') + '>' + t + '</option>'; }
+  return '<select class="sel-clas' + cls + '" data-clas="' + esc(claveAjuste(corte, f)) + '">' +
+    opt('', 'Sin clasificar') + opt('rebote', 'Rebote de inventario') + opt('pregunta', 'Preguntar al JD') + '</select>';
 }
 function tablaHTML(headers, rowsHTML, totalRowHTML) {
   var h = headers.map(function (x) { return '<th class="' + (x.num ? 'num' : '') + '">' + esc(x.t) + '</th>'; }).join('');
@@ -1378,77 +1419,88 @@ function renderAjustes() {
   if (!c) { info.textContent = ''; el.innerHTML = '<p class="vacio">Aún no hay ajustes cargados. Sube el archivo AJUSTE_JD arriba.</p>'; return; }
   var p = computeAjustes(c.filas);
   var multi = computeAjustesMulti(cortesDe('ajus'));
-  info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · ' + p.ajustes + ' ajustes · ' + fmtFecha(p.fechaMin) + ' – ' + fmtFecha(p.fechaMax) + ' · Semana de lunes a domingo';
+  /* Selector global de sucursal: por defecto la de más ajustes del corte; la
+     selección se recuerda. NO hay opción "Todas": el módulo muestra solo la
+     sucursal seleccionada, sin concentrado. */
+  if (!ajusSuc || !p.topPesos[ajusSuc]) {
+    ajusSuc = (state.ajusSuc && p.topPesos[state.ajusSuc]) ? state.ajusSuc : sucursalDefault(p.porSucursal);
+  }
+  var filasSuc = c.filas.filter(function (f) { return f.centro === ajusSuc; });
+  var ps = computeAjustes(filasSuc);
+  var sucSel = null;
+  p.porSucursal.forEach(function (x) { if (x.centro === ajusSuc) sucSel = x; });
+  info.textContent = 'Corte: ' + fmtFecha(c.fechaCorte) + ' · Archivo: ' + c.nombre + ' · ' + ps.ajustes + ' ajustes · ' + fmtFecha(ps.fechaMin) + ' – ' + fmtFecha(ps.fechaMax) + ' · Semana de lunes a domingo';
   function corta(s, n) { s = str(s); return s.length > n ? s.slice(0, n) + '…' : s; }
-  function movDe(mov) { for (var i = 0; i < p.porMovimiento.length; i++) if (p.porMovimiento[i].mov === mov) return p.porMovimiento[i]; return { mov: mov, n: 0, importe: 0, cantidad: 0 }; }
+  function movDe(mov) { for (var i = 0; i < ps.porMovimiento.length; i++) if (ps.porMovimiento[i].mov === mov) return ps.porMovimiento[i]; return { mov: mov, n: 0, importe: 0, cantidad: 0 }; }
   var m701 = movDe('701'), m702 = movDe('702');
   var html = '';
-  /* 1. Resumen */
+  /* Selector de sucursal (global para todo el módulo) */
+  html += '<div class="sel-suc"><span class="sel-suc-label">Sucursal:</span><div class="pills">' + p.porSucursal.map(function (x) {
+    return '<button class="mini-pill' + (x.centro === ajusSuc ? ' active' : '') + '" data-ajus-suc="' + esc(x.centro) + '" type="button">' + esc(x.centro) + ' ' + esc(x.nombre) + '</button>';
+  }).join('') + '</div></div>';
+  /* 1. Resumen (solo la sucursal seleccionada) */
   html += '<div class="totales">' +
-    '<div class="total-card destacado"><div class="etiqueta">Neto</div><div class="valor">' + fmtDifp(p.total) + '</div></div>' +
-    '<div class="total-card"><div class="etiqueta">Ajustes</div><div class="valor">' + p.ajustes + '</div></div>' +
-    '<div class="total-card"><div class="etiqueta">Artículos repetitivos</div><div class="valor">' + p.repetitivosCount + '</div><div class="sub">' + p.articulosDistintos + ' artículos distintos</div></div>' +
-    '<div class="total-card"><div class="etiqueta">Sucursales</div><div class="valor">' + p.porSucursal.length + '</div></div></div>';
-  /* 2. Total por movimiento */
+    '<div class="total-card destacado"><div class="etiqueta">Neto</div><div class="valor">' + fmtDifp(ps.total) + '</div></div>' +
+    '<div class="total-card"><div class="etiqueta">Ajustes</div><div class="valor">' + ps.ajustes + '</div></div>' +
+    '<div class="total-card"><div class="etiqueta">Artículos distintos</div><div class="valor">' + ps.articulosDistintos + '</div></div>' +
+    '<div class="total-card"><div class="etiqueta">Artículos repetitivos</div><div class="valor">' + ps.repetitivosCount + '</div></div></div>';
+  /* 2. Total por movimiento (solo la sucursal seleccionada) */
   html += '<h3>Total por movimiento</h3>';
   html += barrasSignoHTML('Importe por movimiento', [
     { etiqueta: '701 Salidas (' + m701.n + ' aj)', valor: m701.importe },
     { etiqueta: '702 Reversas (' + m702.n + ' aj)', valor: m702.importe }
   ], fmtDinero);
-  var movRows = p.porSucursal.map(function (x) {
-    return '<tr><td>' + esc(x.centro) + ' ' + esc(x.nombre) + '</td><td class="num">' + x.m701.n + '</td><td class="num">' + fmtDifp(x.m701.importe) + '</td>' +
-      '<td class="num">' + x.m702.n + '</td><td class="num">' + fmtDifp(x.m702.importe) + '</td><td class="num">' + fmtDifp(x.neto) + '</td></tr>';
-  }).join('');
-  html += '<h3>Por sucursal y movimiento</h3>' + tablaHTML(
-    [{ t: 'Sucursal' }, { t: '701 ajustes', num: true }, { t: '701 $', num: true }, { t: '702 ajustes', num: true }, { t: '702 $', num: true }, { t: 'Neto', num: true }],
-    movRows, '<td>Total</td><td class="num">' + m701.n + '</td><td class="num">' + fmtDifp(m701.importe) + '</td><td class="num">' + m702.n + '</td><td class="num">' + fmtDifp(m702.importe) + '</td><td class="num">' + fmtDifp(p.total) + '</td>');
-  /* 3. Top 10 por sucursal */
-  if (!ajusSuc || !p.topPesos[ajusSuc]) ajusSuc = p.porSucursal.length ? p.porSucursal[0].centro : null;
-  var sucSel = null;
-  p.porSucursal.forEach(function (x) { if (x.centro === ajusSuc) sucSel = x; });
+  /* 3. Top 10 por sucursal (sigue el selector global; sin píldoras propias) */
   html += '<h3>Top 10 por sucursal</h3>';
-  html += '<div class="pills">' + p.porSucursal.map(function (x) {
-    return '<button class="mini-pill' + (x.centro === ajusSuc ? ' active' : '') + '" data-ajus-suc="' + esc(x.centro) + '" type="button">' + esc(x.centro) + ' ' + esc(corta(x.nombre, 18)) + '</button>';
-  }).join('') + '</div>';
   html += '<div class="pills"><button class="mini-pill' + (ajusModo === 'pesos' ? ' active' : '') + '" data-ajus-modo="pesos" type="button">En pesos</button>' +
     '<button class="mini-pill' + (ajusModo === 'piezas' ? ' active' : '') + '" data-ajus-modo="piezas" type="button">En piezas</button></div>';
+  /* Filtro "Solo preguntar al JD": la herramienta principal para armar la
+     lista de ajustes a cuestionar. El contador queda siempre a la vista. */
+  var jd = resumenPreguntaJD(c, ajusSuc, state.clasificaciones);
+  html += '<div class="filtro-jd-row"><label class="filtro-jd"><input type="checkbox" data-filtro-jd' + (soloPreguntaJD ? ' checked' : '') + '> Solo preguntar al JD</label>' +
+    '<span class="jd-contador' + (soloPreguntaJD ? ' activo' : '') + '">' + jd.n + ' para preguntar · ' + fmtDifp(jd.total) + '</span></div>';
   if (sucSel) {
-    var topRows = ajusModo === 'pesos' ? p.topPesos[ajusSuc] : p.topPiezas[ajusSuc];
-    html += barrasSignoHTML('Top 10 — ' + sucSel.centro + ' ' + sucSel.nombre + ' (' + (ajusModo === 'pesos' ? 'en pesos' : 'en piezas') + ')',
+    var topRows = ajusModo === 'pesos' ? ps.topPesos[ajusSuc] : ps.topPiezas[ajusSuc];
+    if (soloPreguntaJD) topRows = topRows.filter(function (f) { return clasificacionAjuste(c, f) === 'pregunta'; });
+    html += barrasSignoHTML((soloPreguntaJD ? 'Preguntar al JD — ' : 'Top 10 — ') + sucSel.centro + ' ' + sucSel.nombre + ' (' + (ajusModo === 'pesos' ? 'en pesos' : 'en piezas') + ')',
       topRows.map(function (f) { return { etiqueta: corta(f.descripcion, 20), valor: ajusModo === 'pesos' ? f.importe : f.cantidad }; }),
       ajusModo === 'pesos' ? fmtDinero : function (v) { return fmtNum(v, 3); });
-    var topTable = topRows.map(function (f) {
-      return '<tr><td>' + esc(f.articulo) + '</td><td>' + esc(f.descripcion) + '</td><td>' + fmtFecha(f.fecha) + '</td><td>' + esc(f.movimiento) + '</td>' +
-        '<td class="num">' + fmtNum(f.cantidad, 3) + '</td><td class="num">' + fmtDifp(f.importe) + '</td><td>' + btnPer(f.articulo) + '</td></tr>';
-    }).join('');
-    html += tablaHTML(
-      [{ t: 'Artículo' }, { t: 'Descripción' }, { t: 'Fecha' }, { t: 'Clase' }, { t: 'Cantidad', num: true }, { t: 'Importe', num: true }, { t: 'Perecedero' }],
-      topTable, '');
+    if (!topRows.length) {
+      html += '<p class="hint">Ningún ajuste marcado "Preguntar al JD" en esta sucursal.</p>';
+    } else {
+      var topTable = topRows.map(function (f) {
+        return '<tr><td>' + esc(f.articulo) + '</td><td>' + esc(f.descripcion) + '</td><td>' + fmtFecha(f.fecha) + '</td><td>' + esc(f.movimiento) + '</td>' +
+          '<td class="num">' + fmtNum(f.cantidad, 3) + '</td><td class="num">' + fmtDifp(f.importe) + '</td><td>' + btnPer(f.articulo) + '</td><td>' + selectClasificacion(c, f) + '</td></tr>';
+      }).join('');
+      html += tablaHTML(
+        [{ t: 'Artículo' }, { t: 'Descripción' }, { t: 'Fecha' }, { t: 'Clase' }, { t: 'Cantidad', num: true }, { t: 'Importe', num: true }, { t: 'Perecedero' }, { t: 'Clasificación' }],
+        topTable, '');
+    }
   }
-  /* 4. Artículos más representativos */
+  /* 4. Artículos más representativos (solo la sucursal seleccionada) */
   html += '<h3>Artículos más representativos</h3>';
   html += barrasSignoHTML('Top 10 artículos por importe total',
-    p.topArticulos.map(function (a) { return { etiqueta: corta(a.descripcion, 20), valor: a.importe }; }), fmtDinero);
-  var topArtRows = p.topArticulos.map(function (a) {
+    ps.topArticulos.map(function (a) { return { etiqueta: corta(a.descripcion, 20), valor: a.importe }; }), fmtDinero);
+  var topArtRows = ps.topArticulos.map(function (a) {
     return '<tr><td>' + esc(a.articulo) + '</td><td>' + esc(a.descripcion) + '</td><td class="num">' + a.ajustes + '</td>' +
       '<td class="num">' + fmtDifp(a.importe) + '</td><td>' + Object.keys(a.movs).sort().map(function (m) { return m + ' ×' + a.movs[m]; }).join(', ') + '</td><td>' + btnPer(a.articulo) + '</td></tr>';
   }).join('');
   html += tablaHTML(
     [{ t: 'Artículo' }, { t: 'Descripción' }, { t: 'Ajustes', num: true }, { t: 'Importe total', num: true }, { t: 'Movimientos' }, { t: 'Perecedero' }],
     topArtRows, '');
-  /* 5. Artículos repetitivos */
+  /* 5. Artículos repetitivos (solo la sucursal seleccionada) */
   html += '<h3>Artículos repetitivos</h3>';
   html += barrasHTML('Top 10 por número de ajustes',
-    p.repetitivos.slice(0, 10).map(function (a) { return { etiqueta: corta(a.descripcion, 20), valor: a.ajustes }; }), fmtNum);
-  var repRows = p.repetitivos.map(function (a) {
+    ps.repetitivos.slice(0, 10).map(function (a) { return { etiqueta: corta(a.descripcion, 20), valor: a.ajustes }; }), fmtNum);
+  var repRows = ps.repetitivos.map(function (a) {
     return '<tr><td>' + esc(a.articulo) + '</td><td>' + esc(a.descripcion) + '</td><td class="num">' + a.ajustes + '</td>' +
       '<td class="num">' + fmtDifp(a.importe) + '</td><td>' + Object.keys(a.movs).sort().map(function (m) { return m + ' ×' + a.movs[m]; }).join(', ') + '</td><td>' + btnPer(a.articulo) + '</td></tr>';
   }).join('');
   html += tablaHTML(
     [{ t: 'Artículo' }, { t: 'Descripción' }, { t: 'Ajustes', num: true }, { t: 'Importe total', num: true }, { t: 'Movimientos' }, { t: 'Perecedero' }],
     repRows, '');
-  /* 6. Perecederos */
-  var perList = p.porArticulo.filter(function (a) { return esPerecedero(a.articulo); })
+  /* 6. Perecederos (solo la sucursal seleccionada) */
+  var perList = ps.porArticulo.filter(function (a) { return esPerecedero(a.articulo); })
     .sort(function (a, b) { return Math.abs(b.importe) - Math.abs(a.importe); });
   var perTotal = perList.reduce(function (acc, a) { return acc + a.importe; }, 0);
   html += '<h3>🌿 Perecederos</h3>';
@@ -1464,48 +1516,49 @@ function renderAjustes() {
       [{ t: 'Artículo' }, { t: 'Descripción' }, { t: 'Ajustes', num: true }, { t: 'Importe total', num: true }, { t: 'Marca' }, { t: 'Quitar' }],
       perRows, '<td>Total</td><td></td><td class="num">' + perList.reduce(function (acc, a) { return acc + a.ajustes; }, 0) + '</td><td class="num">' + fmtDifp(perTotal) + '</td><td></td><td></td>');
   }
-  /* 7. Por semana (lun–dom) */
+  /* 7. Por semana (lun–dom, solo la sucursal seleccionada; combina con el
+     selector de sucursal) */
   html += '<h3>Por semana (lunes a domingo)</h3>';
-  var semanasDesc = multi.porSemana.slice().sort(function (a, b) { return (a.semana < b.semana) ? 1 : -1; });
-  if (!ajusSemanaSel || !multi.porSemana.some(function (w) { return w.semana === ajusSemanaSel; })) ajusSemanaSel = semanasDesc.length ? semanasDesc[0].semana : null;
+  var semSuc = multi.filas.filter(function (x) { return x.suc === ajusSuc && x.ajustes > 0; });
+  var semAsc = semSuc.slice().sort(function (a, b) { return (a.semana < b.semana) ? -1 : 1; });
+  var semanasDesc = semSuc.slice().sort(function (a, b) { return (a.semana < b.semana) ? 1 : -1; });
+  if (!ajusSemanaSel || !semSuc.some(function (w) { return w.semana === ajusSemanaSel; })) ajusSemanaSel = semanasDesc.length ? semanasDesc[0].semana : null;
   html += '<label class="sel-semana">Semana: <select data-ajus-semana>' + semanasDesc.map(function (w) {
     return '<option value="' + w.semana + '"' + (w.semana === ajusSemanaSel ? ' selected' : '') + '>' + esc(w.etiqueta) + '</option>';
   }).join('') + '</select></label>';
   html += '<div class="grafica"><h3>Neto por semana</h3><canvas id="cv-ajus-semana"></canvas></div>';
-  var semRows = multi.porSemana.map(function (w) {
+  var semRows = semAsc.map(function (w) {
     return '<tr><td>' + esc(w.etiqueta) + '</td><td class="num">' + w.ajustes + '</td><td class="num">' + fmtDifp(w.imp701) + '</td><td class="num">' + fmtDifp(w.imp702) + '</td><td class="num">' + fmtDifp(w.neto) + '</td></tr>';
   }).join('');
   html += tablaHTML(
     [{ t: 'Semana' }, { t: 'Ajustes', num: true }, { t: '701 $', num: true }, { t: '702 $', num: true }, { t: 'Neto', num: true }],
     semRows, '');
   if (ajusSemanaSel) {
-    var detSem = multi.filas.filter(function (x) { return x.semana === ajusSemanaSel && x.ajustes > 0; });
+    var detSem = semSuc.filter(function (x) { return x.semana === ajusSemanaSel; });
     var detRows = detSem.map(function (x) {
       return '<tr><td>' + esc(x.suc) + ' ' + esc(nombreTienda(x.suc)) + '</td><td class="num">' + x.ajustes + '</td><td class="num">' + fmtDifp(x.imp701) + '</td><td class="num">' + fmtDifp(x.imp702) + '</td><td class="num">' + fmtDifp(x.neto) + '</td></tr>';
     }).join('');
-    var selW = null;
-    multi.porSemana.forEach(function (w) { if (w.semana === ajusSemanaSel) selW = w; });
     html += '<h3>Detalle de la semana seleccionada</h3>' + tablaHTML(
       [{ t: 'Sucursal' }, { t: 'Ajustes', num: true }, { t: '701 $', num: true }, { t: '702 $', num: true }, { t: 'Neto', num: true }],
-      detRows, selW ? '<td>Total</td><td class="num">' + selW.ajustes + '</td><td class="num">' + fmtDifp(selW.imp701) + '</td><td class="num">' + fmtDifp(selW.imp702) + '</td><td class="num">' + fmtDifp(selW.neto) + '</td>' : '');
+      detRows, '');
   }
-  /* 8. Ajustes corregidos */
+  /* 8. Ajustes corregidos (solo la sucursal seleccionada) */
   html += '<h3>Ajustes corregidos (par 701/702 del mismo artículo, sucursal y fecha)</h3>';
-  if (!p.corregidos.length) {
+  if (!ps.corregidos.length) {
     html += '<p class="hint">No hay pares 701/702 del mismo artículo, sucursal y fecha en este corte.</p>';
   } else {
-    var corRows = p.corregidos.map(function (x) {
+    var corRows = ps.corregidos.map(function (x) {
       return '<tr><td>' + esc(x.centro) + ' ' + esc(nombreTienda(x.centro)) + '</td><td>' + esc(x.articulo) + '</td><td>' + esc(x.descripcion) + '</td><td>' + fmtFecha(x.fecha) + '</td>' +
         '<td class="num">' + fmtDifp(x.imp701) + '</td><td class="num">' + fmtDifp(x.imp702) + '</td><td class="num">' + fmtDifp(x.efecto) + '</td></tr>';
     }).join('');
-    var corTotal = p.corregidos.reduce(function (acc, x) { return acc + x.efecto; }, 0);
-    html += '<p class="hint">' + p.corregidos.length + ' pares corregidos en este corte. El efecto neto de los pares es ' + fmtDifp(corTotal) + '.</p>';
+    var corTotal = ps.corregidos.reduce(function (acc, x) { return acc + x.efecto; }, 0);
+    html += '<p class="hint">' + ps.corregidos.length + ' pares corregidos en este corte. El efecto neto de los pares es ' + fmtDifp(corTotal) + '.</p>';
     html += tablaHTML(
       [{ t: 'Sucursal' }, { t: 'Artículo' }, { t: 'Descripción' }, { t: 'Fecha' }, { t: '701 $', num: true }, { t: '702 $', num: true }, { t: 'Efecto neto', num: true }],
       corRows, '');
   }
   el.innerHTML = html;
-  dibujarBarrasSigno($('cv-ajus-semana'), multi.porSemana.map(function (w) {
+  dibujarBarrasSigno($('cv-ajus-semana'), semAsc.map(function (w) {
     return { etiqueta: w.semana.slice(8, 10) + '/' + w.semana.slice(5, 7), valor: w.neto };
   }), fmtDinero);
 }
@@ -1683,7 +1736,7 @@ function init() {
     var per = e.target.closest('[data-per]');
     if (per) { togglePerecedero(per.getAttribute('data-per')); return; }
     var as = e.target.closest('[data-ajus-suc]');
-    if (as) { ajusSuc = as.getAttribute('data-ajus-suc'); renderAjustes(); return; }
+    if (as) { ajusSuc = as.getAttribute('data-ajus-suc'); state.ajusSuc = ajusSuc; guardarEstado(); renderAjustes(); return; }
     var am = e.target.closest('[data-ajus-modo]');
     if (am) { ajusModo = am.getAttribute('data-ajus-modo'); renderAjustes(); return; }
     var imp = e.target.closest('[data-importar]');
@@ -1699,6 +1752,14 @@ function init() {
     }
   });
   document.addEventListener('change', function (e) {
+    var cl = e.target.closest('[data-clas]');
+    if (cl) {
+      var k = cl.getAttribute('data-clas');
+      if (cl.value) state.clasificaciones[k] = cl.value; else delete state.clasificaciones[k];
+      guardarEstado(); renderAjustes(); return;
+    }
+    var fj = e.target.closest('[data-filtro-jd]');
+    if (fj) { soloPreguntaJD = fj.checked; renderAjustes(); return; }
     var asem = e.target.closest('[data-ajus-semana]');
     if (asem) { ajusSemanaSel = asem.value; renderAjustes(); return; }
     var fpf = e.target.closest('[data-filtro-fp]');

@@ -217,3 +217,32 @@ footer { max-width: 960px; margin: 0 auto; padding: 0 16px 24px; color: #5a6b7c;
 }
 .sel-semana { font-size: 14px; font-weight: 600; }
 .sel-semana select { font-size: 15px; padding: 6px; border: 1px solid #c3d2e0; border-radius: 6px; margin: 4px 0; }
+
+/* ---- clasificación de ajustes JD ---- */
+.sel-suc { margin: 4px 0 10px; }
+.sel-suc-label { font-size: 13px; font-weight: 700; color: #1d4ed8; }
+select.sel-clas {
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid #c3d2e0;
+  border-radius: 6px;
+  max-width: 170px;
+  background: #fff;
+  color: #172b3a;
+}
+select.sel-clas.val-pregunta { border-color: #f97316; background: #fff7ed; color: #c2410c; font-weight: 700; }
+select.sel-clas.val-rebote { border-color: #1d4ed8; background: #eff6ff; color: #1d4ed8; font-weight: 700; }
+.filtro-jd-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+.filtro-jd { font-size: 14px; font-weight: 800; color: #c2410c; }
+.filtro-jd input { margin-right: 6px; accent-color: #ea580c; }
+.jd-contador {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 800;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #c2410c;
+}
+.jd-contador.activo { background: #ea580c; border-color: #ea580c; color: #fff; }
